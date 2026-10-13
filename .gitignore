@@ -1,0 +1,14 @@
+data/
+runs/
+gifs/
+*.npz
+*.pkl
+*.log
+__pycache__/
+.venv/
+*.egg-info/
+.ruff_cache/
+.DS_Store
+play_selftest.png
+.claude/
+ledger.jsonl
