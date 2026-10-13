@@ -57,19 +57,20 @@ def kpis(rows):
 
 def chart(rows):
     ys = [r["gFVD"] for r in rows]
-    lo, hi = math.log10(min(ys) * 0.93), math.log10(max(ys) * 1.07)
+    pad = (max(ys) - min(ys)) * 0.04
+    lo, hi = min(ys) - pad, max(ys) + pad
     n = len(rows)
 
     def px(i):
         return PAD_L + (W - PAD_L - PAD_R) * i / max(n - 1, 1)
 
     def py(v):
-        return PAD_T + (H - PAD_T - PAD_B) * (hi - math.log10(v)) / (hi - lo)
+        return PAD_T + (H - PAD_T - PAD_B) * (hi - v) / (hi - lo)
 
     out = [f'<svg viewBox="0 0 {W} {H}" width="100%" font-family="inherit" font-size="11">']
-    span = 10 ** hi - 10 ** lo
+    span = hi - lo
     step = next(s for s in (0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01) if span / s <= 8)
-    for k in range(math.ceil(10 ** lo / step), math.floor(10 ** hi / step) + 1):
+    for k in range(math.ceil(lo / step), math.floor(hi / step) + 1):
         v = k * step
         y = py(v)
         out.append(f'<line x1="{PAD_L}" x2="{W - PAD_R}" y1="{y:.1f}" y2="{y:.1f}" class="grid"/>')
@@ -104,12 +105,18 @@ def chart(rows):
         s = 7 if r.get("milestone") else 4
         tip = html.escape(json.dumps({k: r.get(k) for k in ("tag", "ts", "gFVD", "AF", "seed", "train_s", "kind", "milestone", "source")}))
         out.append(f'<rect x="{x - s / 2:.1f}" y="{y - s / 2:.1f}" width="{s}" height="{s}" class="{cls}" data-tip="{tip}"/>')
-    for k, r in enumerate(marks):
+    placed = []
+    for r in marks:
         x, y = px(r["i"]), py(r["gFVD"])
-        dy = -12 if k % 2 == 0 else 20
+        text = r["milestone"][:40]
+        width = 6.4 * len(text)
         right = x > W - 260
-        out.append(f'<text x="{x + (-6 if right else 6):.1f}" y="{y + dy:.1f}" text-anchor="{"end" if right else "start"}" class="label">{html.escape(r["milestone"][:40])}</text>')
-    out.append(f'<text x="{PAD_L}" y="{PAD_T - 8}" class="axis">gFVD, log scale (lower is better)</text>')
+        x0 = x - 6 - width if right else x + 6
+        dy = next(dy for dy in (-12, 20, -26, 34, -40, 48, -54) if not any(
+            x0 < bx + bw + 8 and bx < x0 + width + 8 and abs(y + dy - by) < 13 for bx, bw, by in placed))
+        placed.append((x0, width, y + dy))
+        out.append(f'<text x="{x + (-6 if right else 6):.1f}" y="{y + dy:.1f}" text-anchor="{"end" if right else "start"}" class="label">{html.escape(text)}</text>')
+    out.append(f'<text x="{PAD_L}" y="{PAD_T - 8}" class="axis">gFVD (lower is better)</text>')
     out.append(f'<text x="{W - PAD_R}" y="{H - 6}" text-anchor="end" class="axis">experiments in time order</text>')
     out.append("</svg>")
     return "\n".join(out)
