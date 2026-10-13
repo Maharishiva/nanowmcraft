@@ -1,0 +1,25 @@
+[project]
+name = "tinywmcraft"
+version = "1.0.0"
+description = "Tiny from-scratch pixel world model for Craftax-Classic"
+requires-python = ">=3.11"
+dependencies = [
+  "craftax==1.5.0",
+  "jax==0.10.1",
+  "flax==0.12.7",
+  "optax==0.2.8",
+  "numpy",
+  "imageio",
+]
+
+[project.optional-dependencies]
+cuda = ["jax[cuda12]==0.10.1"]  # NVIDIA GPU (training); plain jax is the CPU build
+play = ["pygame"]               # play_wm.py
+
+# Not an installable package -- the scripts are run from the repo dir
+# (python train.py). This keeps `uv sync` / `uv run` from building anything (no egg-info).
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 110
