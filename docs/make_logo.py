@@ -21,12 +21,12 @@ GLYPHS = {
 WORDS = [("tiny", "tiny"), ("wm", "wm"), ("craft", "craft")]
 DESC = {"y": 3}
 PALETTES = {
-    "light": {"tiny": "#16191d", "wm": "#ff6a13", "craft": "#2f9e44"},
-    "dark": {"tiny": "#f3f3f1", "wm": "#ff7a2a", "craft": "#4cc463"},
+    "light": {"tiny": "#7860a5", "wm": "#ff6a13", "craft": "#2f9e44"},
+    "dark": {"tiny": "#a48bd0", "wm": "#ff7a2a", "craft": "#4cc463"},
 }
 SHADES = {
-    "light": {"tiny": ("#454b54", "#0c0e10"), "wm": ("#ffa04a", "#e84f06"), "craft": ("#62c873", "#1f7f33")},
-    "dark": {"tiny": ("#ffffff", "#bdbdb7"), "wm": ("#ffb070", "#f25f10"), "craft": ("#86e394", "#2f9e44")},
+    "light": {"tiny": ("#a48bd0", "#5b4486"), "wm": ("#ffa04a", "#e84f06"), "craft": ("#62c873", "#1f7f33")},
+    "dark": {"tiny": ("#c3b6dd", "#8a70bd"), "wm": ("#ffb070", "#f25f10"), "craft": ("#86e394", "#2f9e44")},
 }
 ROWS = 12
 GAP = 2

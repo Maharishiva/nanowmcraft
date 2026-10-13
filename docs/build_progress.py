@@ -17,7 +17,7 @@ PAD_L, PAD_R, PAD_T, PAD_B = 70, 24, 24, 46
 
 
 def banner():
-    page = {"tiny": "#f0f0ee", "wm": "#ff6a13", "craft": "#f0f0ee"}
+    page = {"tiny": "#a48bd0", "wm": "#ff6a13", "craft": "#f0f0ee"}
     return svg(page, None).replace('<svg ', '<svg class="banner" ', 1)
 
 
