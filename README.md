@@ -1,8 +1,8 @@
-# nanowmcraft: normuon recipe
+# tinywmcraft: normuon recipe
 
 The code behind the published checkpoint [normuon_head_bridge_s0](https://huggingface.co/maharishiva/nanowmcraft) (seed 0, gFVD 0.00125, AF 0.920, 567 s cold on one A100).
 Recipe: causal two-frame tokenizer, shortcut targets, generated-history training, temporal-difference loss, scheduled head-gradient control and NorMuon.
-It has not passed the three-seed record gate; the rules and the current record are on [main](https://github.com/Maharishiva/nanowmcraft).
+It has not passed the three-seed record gate; the rules and the current record are on [main](https://github.com/Maharishiva/tinywmcraft).
 
 ```bash
 uv venv --python 3.11 && uv pip install -r pyproject.toml --extra play && source .venv/bin/activate
