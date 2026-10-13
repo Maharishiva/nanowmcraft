@@ -14,16 +14,19 @@ GLYPHS = {
     "c": [".#######", "########", "##......", "##......", "##......", "##......", "##......", "########", ".#######"],
     "r": ["#######.", "########", "##....##", "##......", "##......", "##......", "##......", "##......", "##......"],
     "f": ["...####", "..#####", "..##...", "#######", "#######", "..##...", "..##...", "..##...", "..##...", "..##...", "..##...", "..##..."],
+    "i": ["##", "##", ".."] + ["##"] * 9,
+    "y": ["##....##"] * 7 + ["########", ".#######", "......##", "########", "#######."],
     "t": ["..##...", "..##...", "..##...", "#######", "#######", "..##...", "..##...", "..##...", "..##...", "..##...", "..#####", "...####"],
 }
-WORDS = [("nano", "nano"), ("wm", "wm"), ("craft", "craft")]
+WORDS = [("tiny", "tiny"), ("wm", "wm"), ("craft", "craft")]
+DESC = {"y": 3}
 PALETTES = {
-    "light": {"nano": "#16191d", "wm": "#ff6a13", "craft": "#2f9e44"},
-    "dark": {"nano": "#f3f3f1", "wm": "#ff7a2a", "craft": "#4cc463"},
+    "light": {"tiny": "#16191d", "wm": "#ff6a13", "craft": "#2f9e44"},
+    "dark": {"tiny": "#f3f3f1", "wm": "#ff7a2a", "craft": "#4cc463"},
 }
 SHADES = {
-    "light": {"nano": ("#454b54", "#0c0e10"), "wm": ("#ffa04a", "#e84f06"), "craft": ("#62c873", "#1f7f33")},
-    "dark": {"nano": ("#ffffff", "#bdbdb7"), "wm": ("#ffb070", "#f25f10"), "craft": ("#86e394", "#2f9e44")},
+    "light": {"tiny": ("#454b54", "#0c0e10"), "wm": ("#ffa04a", "#e84f06"), "craft": ("#62c873", "#1f7f33")},
+    "dark": {"tiny": ("#ffffff", "#bdbdb7"), "wm": ("#ffb070", "#f25f10"), "craft": ("#86e394", "#2f9e44")},
 }
 ROWS = 12
 GAP = 2
@@ -43,7 +46,7 @@ def layout():
     for group, word in WORDS:
         for ch in word:
             g = GLYPHS[ch]
-            top = ROWS - len(g)
+            top = ROWS - len(g) + DESC.get(ch, 0)
             for r, line in enumerate(g):
                 for c, v in enumerate(line):
                     if v == "#":
@@ -56,7 +59,7 @@ def svg(palette, shades, background=None):
     cells, width = layout()
     solid = {(x, y) for x, y, _ in cells}
     m = 2 if background else 1
-    w, h = (width + 2 * m) * CELL, (ROWS + 1 + 2 * m) * CELL
+    w, h = (width + 2 * m) * CELL, (ROWS + 1 + max(DESC.values()) + 2 * m) * CELL
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" shape-rendering="crispEdges">', "<defs>"]
     for group, color in palette.items():
         out.append(f'<pattern id="d-{group}" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="2" fill="{color}"/><rect x="2" y="2" width="2" height="2" fill="{color}"/></pattern>')

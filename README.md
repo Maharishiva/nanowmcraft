@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
-    <img alt="nanowmcraft" src="assets/logo-light.png" width="760">
+    <img alt="tinywmcraft" src="assets/logo-light.png" width="760">
   </picture>
 </p>
 
@@ -16,7 +16,7 @@
 <p align="center"><sub>Four held-out episodes, primed with 5 / 15 / 30 / 90 real frames, then 32 imagined frames.
 Ground truth left, world model right, same actions.</sub></p>
 
-nanowmcraft learns [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax) from **500k transitions** of pixels and actions.
+tinywmcraft learns [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax) from **500k transitions** of pixels and actions.
 Given a few real frames and an action, it generates the next frame, the reward and whether the episode ended.
 No game state, tile labels or pretrained features enter the model.
 The goal is a speedrun: lower the generation error (gFVD) under a fixed data, compute and evaluation budget.
@@ -35,6 +35,10 @@ The goal is a speedrun: lower the generation error (gFVD) under a fixed data, co
 | 1 | 2026-09-16 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 0.00149 ± 0.00010 | 0.938 | 589 s | not published |
 
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one A100-40GB.
+
+Every experiment of the research so far, as a dot over time, with the best multi-seed recipe as the falling line ([interactive version](https://maharishiva.github.io/tinywmcraft/progress.html)):
+
+<p align="center"><a href="https://maharishiva.github.io/tinywmcraft/progress.html"><img src="assets/progress.png" alt="gFVD over the research history" width="760"></a></p>
 
 ## Quickstart
 
