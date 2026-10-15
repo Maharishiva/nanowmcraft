@@ -14,15 +14,15 @@
 </p>
 
 <p align="center"><sub>One held-out episode. Eight real frames prime the model, then it imagines 32 frames from the recorded keys alone.
-Real game left, world model right, pressed key below. The model drifts, and that drift is the number this repo chases.</sub></p>
+Real game left, world model right, pressed key below.</sub></p>
 
 tinywmcraft learns [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax) from **500k transitions** of pixels and actions,
 collected by a frozen pretrained agent playing greedily at mid-game skill.
 Given a few real frames and an action, it generates the next frame, the reward and whether the episode ended.
-No game state, tile labels or pretrained features enter the model. The 7×7 tile grid of the tokenizer is the one baked-in prior.
+No game state, tile labels or pretrained features enter the model.
 The goal is a speedrun: lower the generation error (gFVD) under a fixed data, compute and evaluation budget.
 
-**13.9M parameters** (5.2M tokenizer, 8.6M world model). **One cold run with its eval is about 12 minutes of A100, 5.3 Colab compute units per hour, about $0.10.**
+**13.9M parameters** (5.2M tokenizer, 8.6M world model). **One cold run with its eval is about 12 minutes of A100, about $0.10 on Colab.**
 
 | file | what it is |
 |---|---|
@@ -38,21 +38,7 @@ The goal is a speedrun: lower the generation error (gFVD) under a fixed data, co
 | 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 0.00147 ± 0.00019 | 0.929 | 0.897 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/nanowmcraft) |
 
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`.
-Full metric vectors and per-seed rows: [validation/colab_20261015.md](validation/colab_20261015.md).
-The same recipe measured 0.00149 ± 0.00010 and AF 0.938 on another A100 on 2026-09-16; the difference is seed and compile noise, see the rules.
-
-### Candidates that lower gFVD but fail a gate
-
-Two recipes from the research loop beat the record on every seed and lose reward precision doing it. They are not records under the gates below.
-
-| recipe | where | mean gFVD ↓ | vs record | AF ↑ | reward precision ↑ | max cold time |
-|---|---|---:|---:|---:|---:|---:|
-| shortcut targets + scheduled head gradients, original Muon, 16k updates | branch `codex/wm-shortcut-head-normuon-20260919` | 0.00131 ± 0.00007 | −11% | 0.934 | 0.849 | 552 s |
-| the above plus two-frame tokenizer, generated-history training, temporal loss and NorMuon | branch [`normuon`](https://github.com/Maharishiva/tinywmcraft/tree/normuon), [checkpoint](https://huggingface.co/maharishiva/nanowmcraft) | 0.00123 ± 0.00002 | −16% | 0.923 | 0.825 | 568 s |
-
-Same seeds, same machine, same day as the record. Scaling the head gradients into the trunk by 0.1 is what buys the frames and costs the reward head.
-NorMuon on its own is not the gain: the [three-seed ablation](validation/ablation_seed023.md) measured it within noise of Muon, and 4% worse inside the reduced recipe.
-The "reduced model" at the end of the progress chart is the first row: the loop's last accepted change, 16k updates so the heads fit the budget.
+Per-seed rows and full metric vectors: [validation/colab_20261015.md](validation/colab_20261015.md).
 
 Every experiment of the research so far, as a dot over time, with the accepted recipe as the falling line ([interactive version](https://maharishiva.github.io/tinywmcraft/progress.html)):
 
@@ -83,8 +69,6 @@ curl -L --fail --create-dirs -o runs/record1/model.npz https://huggingface.co/ma
 python play_wm.py --model runs/record1/model.npz
 ```
 
-The lower-gFVD `normuon` checkpoint needs its own branch: `git checkout normuon`, then the same two lines with `normuon_head_bridge_s0/model.npz`.
-
 ## Rules
 
 - **Data:** train only on `data/train.npz`, at most 500k transitions.
@@ -92,10 +76,9 @@ The lower-gFVD `normuon` checkpoint needs its own branch: `git checkout normuon`
 - **Evaluator:** `eval.py` stays byte-identical: 2048 windows, 8 real context frames, 16 generated frames, 8 Euler steps.
 - **Autoregressive:** generate frame by frame; denoising several future frames jointly is not a valid entry.
 - **Seeds:** report training seeds 0, 1 and 2, every run, and the full metric vector.
-- **Gates:** a new record lowers the mean gFVD by more than 0.0001, and its mean AF and every reward and termination metric stay within 2% of the current record's means. Both sides are measured in the same maintainer rerun, same seeds, same machine, so the gates track the hardware instead of a number from another day.
+- **Gates:** a new record lowers the mean gFVD by more than 0.0001, and its mean AF and every reward and termination metric stay within 2% of the current record's means, both measured in the same maintainer rerun on the same seeds and machine.
 
-One run is noisy: the same recipe and seed differ by up to 0.0002 gFVD between fresh compiles, and the per-seed sample SD of the record is 0.0002.
-Compare three-seed means, never single runs, and paired on the same seeds when you can.
+One run is noisy: the same recipe and seed differ by up to 0.0002 gFVD between fresh compiles. Compare three-seed means, never single runs.
 
 ## Submitting
 

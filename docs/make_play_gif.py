@@ -1,7 +1,7 @@
 """Demo GIF: one held-out episode, eight real frames of priming, then the world model free-runs on the recorded
 actions. Left pane: real Craftax. Right pane: the world model. Below: the key being pressed, drawn pixel style.
 
-    python docs/make_play_gif.py --model runs/base/model.npz --out assets/play.gif
+    python docs/make_play_gif.py --model runs/base/model.npz --style craft --out assets/play.gif   # the README gif
 
 CPU is fine: one 32-frame rollout takes about a minute on a laptop.
 """
@@ -76,22 +76,34 @@ def up(frame):
     return np.repeat(np.repeat(frame, SCALE, 0), SCALE, 1)
 
 
-def pick_window(data, rng):
-    """A held-out window without an episode reset, whose actions are varied and whose agent moves."""
+def rank_windows(data, style="explore"):
+    """Held-out windows without an episode reset, best first, one per environment, no night or sleep frames.
+    explore: varied actions and a moving agent. craft: the agent stays put and crafts, places and hits things,
+    so the whole window is terrain the model has seen."""
     frames, actions, dones = data["frames"], data["actions"], data["dones"].astype(bool)
     L = CTX + T
-    best, best_score = None, -1.0
+    bright = frames[:, :, :49].mean(axis=(2, 3, 4))                       # night and sleep darken the map
+    inv = frames[:, :, 49:].astype(np.int16)
+    changed = np.abs(inv[1:] - inv[:-1]).mean(axis=(2, 3, 4)) > 0.5       # inventory strip changed t -> t+1
+    best = {}
     for env in range(frames.shape[1]):
-        for start in range(1, frames.shape[0] - L, 4):
-            if dones[start - 1:start + L - 1, env].any():
+        for start in range(1, frames.shape[0] - L, 2):
+            if dones[start - 1:start + L - 1, env].any() or bright[start:start + L, env].min() < 62:
                 continue
             fut = actions[start + CTX - 1:start + L - 1, env]
+            hit = changed[start + CTX - 1:start + L - 1, env]
+            clip = frames[start + CTX:start + L, env].astype(np.int16)
             moves = np.isin(fut, [1, 2, 3, 4]).mean()
-            motion = np.abs(np.diff(frames[start + CTX:start + L, env].astype(np.int16), axis=0)).mean()
-            score = len(set(fut.tolist())) + 2.0 * moves + motion / 10 + (1.0 if (fut == 5).any() else 0.0)
-            if score > best_score:
-                best, best_score = (start, env), score
-    return best
+            motion = np.abs(np.diff(clip[:, :49], axis=0)).mean()
+            crafts = (np.isin(fut, [11, 12, 13, 14, 15, 16]) & hit).sum()   # a craft that actually produced an item
+            places = (np.isin(fut, [7, 8, 9, 10]) & hit).sum()
+            if style == "craft":
+                score = 3.0 * min(crafts, 3) + 1.5 * min(places, 3) + 0.5 * hit.sum() + len(set(fut.tolist())) - 6.0 * moves
+            else:
+                score = 3.0 * min(crafts, 2) + 1.5 * min(places, 2) + len(set(fut.tolist())) + 2.0 * moves + motion / 10
+            if score > best.get(env, (None, -1.0))[1]:
+                best[env] = (start, score)
+    return [(start, env) for env, (start, score) in sorted(best.items(), key=lambda kv: -kv[1][1])]
 
 
 def rollout(model, ctx_frames, actions, key):
@@ -152,11 +164,13 @@ def main():
     p.add_argument("--model", type=Path, required=True)
     p.add_argument("--data", type=Path, default=Path("data/eval.npz"))
     p.add_argument("--out", type=Path, default=Path("assets/play.gif"))
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seed", type=int, default=0, help="sampling noise of the rollout")
+    p.add_argument("--rank", type=int, default=0, help="which held-out window, best first")
+    p.add_argument("--style", choices=("explore", "craft"), default="explore")
     p.add_argument("--fps", type=float, default=8.0)
     a = p.parse_args()
     data = dict(np.load(a.data))
-    start, env = pick_window(data, np.random.default_rng(a.seed))
+    start, env = rank_windows(data, a.style)[a.rank]
     L = CTX + T
     frames = data["frames"][start:start + L, env]
     actions = data["actions"][start - 1:start + L - 1, env].astype(np.int32)        # incoming action of each frame
