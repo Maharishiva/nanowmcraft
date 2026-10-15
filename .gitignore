@@ -10,5 +10,4 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 play_selftest.png
-.claude/
 ledger.jsonl

@@ -6,20 +6,23 @@
 </p>
 
 <p align="center">
-  A tiny pixel world model for Craftax, trained from scratch in <b>10 minutes on one A100</b>.
+  A tiny pixel world model for Craftax, trained from scratch in <b>10 minutes on one A100</b>, for about <b>10 cents</b>.
 </p>
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Real frames beside imagined frames" width="760">
+  <img src="assets/play.gif" alt="A held-out episode: real Craftax on the left, the world model on the right, the pressed key below" width="560">
 </p>
 
-<p align="center"><sub>Four held-out episodes, primed with 5 / 15 / 30 / 90 real frames, then 32 imagined frames.
-Ground truth left, world model right, same actions.</sub></p>
+<p align="center"><sub>One held-out episode. Eight real frames prime the model, then it imagines 32 frames from the recorded keys alone.
+Real game left, world model right, pressed key below. The model drifts, and that drift is the number this repo chases.</sub></p>
 
-tinywmcraft learns [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax) from **500k transitions** of pixels and actions.
+tinywmcraft learns [Craftax-Classic](https://github.com/MichaelTMatthews/Craftax) from **500k transitions** of pixels and actions,
+collected by a frozen pretrained agent playing greedily at mid-game skill.
 Given a few real frames and an action, it generates the next frame, the reward and whether the episode ended.
-No game state, tile labels or pretrained features enter the model.
+No game state, tile labels or pretrained features enter the model. The 7×7 tile grid of the tokenizer is the one baked-in prior.
 The goal is a speedrun: lower the generation error (gFVD) under a fixed data, compute and evaluation budget.
+
+**13.9M parameters** (5.2M tokenizer, 8.6M world model). **One cold run with its eval is about 12 minutes of A100, 5.3 Colab compute units per hour, about $0.10.**
 
 | file | what it is |
 |---|---|
@@ -30,13 +33,28 @@ The goal is a speedrun: lower the generation error (gFVD) under a fixed data, co
 
 ## Records
 
-| # | date | change | mean gFVD ↓ | AF ↑ | max cold time | checkpoints |
-|---|---|---|---:|---:|---:|---|
-| 1 | 2026-09-16 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 0.00149 ± 0.00010 | 0.938 | 589 s | not published |
+| # | date | change | mean gFVD ↓ | AF ↑ | reward precision ↑ | max cold time | checkpoints |
+|---|---|---|---:|---:|---:|---:|---|
+| 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 0.00147 ± 0.00019 | 0.929 | 0.897 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/nanowmcraft) |
 
-Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one A100-40GB.
+Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`.
+Full metric vectors and per-seed rows: [validation/colab_20261015.md](validation/colab_20261015.md).
+The same recipe measured 0.00149 ± 0.00010 and AF 0.938 on another A100 on 2026-09-16; the difference is seed and compile noise, see the rules.
 
-Every experiment of the research so far, as a dot over time, with the best multi-seed recipe as the falling line ([interactive version](https://maharishiva.github.io/tinywmcraft/progress.html)):
+### Candidates that lower gFVD but fail a gate
+
+Two recipes from the research loop beat the record on every seed and lose reward precision doing it. They are not records under the gates below.
+
+| recipe | where | mean gFVD ↓ | vs record | AF ↑ | reward precision ↑ | max cold time |
+|---|---|---:|---:|---:|---:|---:|
+| shortcut targets + scheduled head gradients, original Muon, 16k updates | branch `codex/wm-shortcut-head-normuon-20260919` | 0.00131 ± 0.00007 | −11% | 0.934 | 0.849 | 552 s |
+| the above plus two-frame tokenizer, generated-history training, temporal loss and NorMuon | branch [`normuon`](https://github.com/Maharishiva/tinywmcraft/tree/normuon), [checkpoint](https://huggingface.co/maharishiva/nanowmcraft) | 0.00123 ± 0.00002 | −16% | 0.923 | 0.825 | 568 s |
+
+Same seeds, same machine, same day as the record. Scaling the head gradients into the trunk by 0.1 is what buys the frames and costs the reward head.
+NorMuon on its own is not the gain: the [three-seed ablation](validation/ablation_seed023.md) measured it within noise of Muon, and 4% worse inside the reduced recipe.
+The "reduced model" at the end of the progress chart is the first row: the loop's last accepted change, 16k updates so the heads fit the budget.
+
+Every experiment of the research so far, as a dot over time, with the accepted recipe as the falling line ([interactive version](https://maharishiva.github.io/tinywmcraft/progress.html)):
 
 <p align="center"><a href="https://maharishiva.github.io/tinywmcraft/progress.html"><img src="assets/progress.png" alt="gFVD over the research history" width="760"></a></p>
 
@@ -53,37 +71,38 @@ curl -L --fail -o data/eval.npz  https://huggingface.co/datasets/maharishiva/tin
 ```
 
 ```bash
-python train.py --data data/train.npz --out runs/base/model.npz --seed 0   # about 589 s on one A100, compilation included
-python eval.py  --model runs/base/model.npz --tag base --gif               # frozen benchmark, appends to ledger.jsonl
+python train.py --data data/train.npz --out runs/base/model.npz --seed 0   # about 580 s on one A100, compilation included
+python eval.py  --model runs/base/model.npz --tag base --gif               # frozen benchmark, 2 to 2.5 min, appends to ledger.jsonl
 python play_wm.py --model runs/base/model.npz                              # keyboard play; CPU works on a Mac
 ```
 
-To play without training, download a [published checkpoint](https://huggingface.co/maharishiva/nanowmcraft) (gFVD 0.00125, seed 0).
-It was trained by the newer recipe on the `normuon` branch, so play it from there:
+To play without training, download a record checkpoint:
 
 ```bash
-git checkout normuon
-curl -L --fail --create-dirs -o runs/demo/model.npz https://huggingface.co/maharishiva/nanowmcraft/resolve/main/normuon_head_bridge_s0/model.npz
-python play_wm.py --model runs/demo/model.npz
+curl -L --fail --create-dirs -o runs/record1/model.npz https://huggingface.co/maharishiva/nanowmcraft/resolve/main/record1_main_s0/model.npz
+python play_wm.py --model runs/record1/model.npz
 ```
+
+The lower-gFVD `normuon` checkpoint needs its own branch: `git checkout normuon`, then the same two lines with `normuon_head_bridge_s0/model.npz`.
 
 ## Rules
 
 - **Data:** train only on `data/train.npz`, at most 500k transitions.
-- **Compute:** at most 600 s per training run on one A100, tokenizer, data loading and compilation included, with no persistent compilation cache.
+- **Compute:** at most 600 s per training run on one A100 40GB, tokenizer, data loading and compilation included, with no persistent compilation cache. Eval time does not count. The maintainer reruns on a Colab A100-SXM4-40GB; cold training time there matched an A100 on another cloud within 1%.
 - **Evaluator:** `eval.py` stays byte-identical: 2048 windows, 8 real context frames, 16 generated frames, 8 Euler steps.
 - **Autoregressive:** generate frame by frame; denoising several future frames jointly is not a valid entry.
 - **Seeds:** report training seeds 0, 1 and 2, every run, and the full metric vector.
-- **Gates:** a new record lowers the mean gFVD while the mean AF stays at or above 0.935 and the reward and termination metrics stay at or above the current record's means.
+- **Gates:** a new record lowers the mean gFVD by more than 0.0001, and its mean AF and every reward and termination metric stay within 2% of the current record's means. Both sides are measured in the same maintainer rerun, same seeds, same machine, so the gates track the hardware instead of a number from another day.
 
-The same recipe and seed differ by up to 0.0002 gFVD between fresh compiles, so compare means over seeds, never single runs.
+One run is noisy: the same recipe and seed differ by up to 0.0002 gFVD between fresh compiles, and the per-seed sample SD of the record is 0.0002.
+Compare three-seed means, never single runs, and paired on the same seeds when you can.
 
 ## Submitting
 
 1. Open a pull request with your changes to `train.py` or `kernels.py`.
 2. Include the three `ledger.jsonl` rows from `eval.py` and the cold training time of each seed.
 3. Upload the three `model.npz` files to Hugging Face and link them, so anyone can play and score them.
-4. A maintainer retrains the three seeds from the pull request. The record stands if that rerun beats the current mean and passes every gate.
+4. A maintainer retrains the three seeds from the pull request next to the current record. The record stands if that rerun beats the current mean and passes every gate.
 
 ## How it works
 
@@ -101,10 +120,18 @@ The same recipe and seed differ by up to 0.0002 gFVD between fresh compiles, so 
 ## Evaluation
 
 The frozen evaluator samples 2048 windows from held-out episodes with fixed seeds, primes the model on eight real frames and generates 16 frames open-loop.
+It takes 143 s on a Colab A100 and 94 s on the research VM's A100 for the same windows.
 
-- **gFVD ↓:** Fréchet distance between real and generated 4-frame clips in a fixed random CNN's feature space. It needs no external checkpoint and is not comparable to I3D FVD.
+- **gFVD ↓:** Fréchet distance between real and generated 4-frame clips in a fixed random CNN's feature space. It needs no external checkpoint and is not comparable to I3D FVD. A random CNN is not a perceptual metric; what the number tracks is visible below, where the four episodes drift at different rates.
 - **AF ↑:** action following, the share of windows where the true actions predict the salient pixels better than random actions under the same context and noise. An action-blind model scores 0.5.
 - **Heads:** reward correlation, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.
+
+<p align="center">
+  <img src="assets/demo.gif" alt="Real frames beside imagined frames" width="760">
+</p>
+
+<p align="center"><sub>Four held-out episodes, primed with 5 / 15 / 30 / 90 real frames, then 32 imagined frames.
+Ground truth left, world model right, same actions.</sub></p>
 
 ## References
 

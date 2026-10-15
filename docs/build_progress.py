@@ -38,14 +38,14 @@ def kpis(rows):
     marks = [r for r in rows if r.get("milestone")]
     first, best = marks[0], min(marks, key=lambda r: r["gFVD"])
     drop = (best["gFVD"] / first["gFVD"] - 1) * 100
-    days = (rows[-1]["t"] - rows[0]["t"]).total_seconds() / 86400
+    days = len({r["t"].date() for r in rows})
     cells = [
         ("first recipe", f'{first["gFVD"]:.5f}'),
         ("best 3-seed", f'{best["gFVD"]:.5f}'),
         ("change", f"{drop:+.1f}%"),
         ("runs", str(len(runs))),
         ("in budget", str(len(valid))),
-        ("days", f"{days:.1f}"),
+        ("active days", str(days)),
     ]
     w = 17
     top = "┌" + "┬".join("─" * w for _ in cells) + "┐"
