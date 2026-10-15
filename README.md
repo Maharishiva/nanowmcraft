@@ -35,7 +35,7 @@ The goal is a speedrun: lower the generation error (gFVD) under a fixed data, co
 
 | # | date | change | mean gFVD ↓ | AF ↑ | reward precision ↑ | max cold time | checkpoints |
 |---|---|---|---:|---:|---:|---:|---|
-| 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 0.00147 ± 0.00019 | 0.929 | 0.897 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/nanowmcraft) |
+| 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 0.00147 ± 0.00019 | 0.929 | 0.897 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/tinywmcraft) |
 
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`.
 Per-seed rows and full metric vectors: [validation/colab_20261015.md](validation/colab_20261015.md).
@@ -65,7 +65,7 @@ python play_wm.py --model runs/base/model.npz                              # key
 To play without training, download a record checkpoint:
 
 ```bash
-curl -L --fail --create-dirs -o runs/record1/model.npz https://huggingface.co/maharishiva/nanowmcraft/resolve/main/record1_main_s0/model.npz
+curl -L --fail --create-dirs -o runs/record1/model.npz https://huggingface.co/maharishiva/tinywmcraft/resolve/main/record1_main_s0/model.npz
 python play_wm.py --model runs/record1/model.npz
 ```
 
