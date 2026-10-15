@@ -24,6 +24,10 @@ The goal is a speedrun: lower the generation error (gFVD) under a fixed data, co
 
 **13.9M parameters** (5.2M tokenizer, 8.6M world model). **One cold run with its eval is about 12 minutes of A100, about $0.10 on Colab.**
 
+<p align="center">
+  <img src="assets/architecture.gif" alt="Frames go through the encoder into 4x4x32 latents; the world model denoises the newest latent in eight flow-matching steps, conditioned on the key; the decoder shows the frame at every step" width="100%">
+</p>
+
 | file | what it is |
 |---|---|
 | [train.py](train.py) | tokenizer and flow-matching world model with reward and termination heads |
@@ -95,10 +99,6 @@ One run is noisy: the same recipe and seed differ by up to 0.0002 gFVD between f
 - **Optimizer.** Muon on every matrix and conv kernel, AdamW on embeddings, biases and norms; warmup, constant, then linear decay over the last 20% of steps.
 - **Training windows.** Half are mined from recent high-loss windows, a quarter start at episode resets, the rest are uniform.
 - **Kernels.** At width 256 the step is bound by memory traffic, so attention, modulated norms, gated residuals and GELU run as fused Pallas kernels on NVIDIA GPUs and fall back to XLA elsewhere.
-
-![Tokenizer and causal dynamics](assets/architecture.png)
-
-![One frame generated through eight denoising steps](assets/generation.gif)
 
 ## Evaluation
 
