@@ -11,3 +11,5 @@ __pycache__/
 .DS_Store
 play_selftest.png
 ledger.jsonl
+docs/*.onnx
+docs/_*

@@ -1,7 +1,7 @@
 """Demo GIF: one held-out episode, eight real frames of priming, then the world model free-runs on the recorded
 actions. Left pane: real Craftax. Right pane: the world model. Below: the key being pressed, drawn pixel style.
 
-    python docs/make_play_gif.py --model runs/base/model.npz --style craft --out assets/play.gif   # the README gif
+    python docs/make_play_gif.py --model runs/base/model.npz --style craft --out docs/assets/play.gif   # the README gif
 
 CPU is fine: one 32-frame rollout takes about a minute on a laptop.
 """
@@ -163,7 +163,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, required=True)
     p.add_argument("--data", type=Path, default=Path("data/eval.npz"))
-    p.add_argument("--out", type=Path, default=Path("assets/play.gif"))
+    p.add_argument("--out", type=Path, default=Path("docs/assets/play.gif"))
     p.add_argument("--seed", type=int, default=0, help="sampling noise of the rollout")
     p.add_argument("--rank", type=int, default=0, help="which held-out window, best first")
     p.add_argument("--style", choices=("explore", "craft"), default="explore")

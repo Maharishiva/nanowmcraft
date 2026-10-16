@@ -207,7 +207,7 @@ def main():
     card = page[:page.index("<main>") + 6] + page[page.index('<pre class="box">'):page.index("<h2>accepted changes</h2>")] + "</main></body></html>"
     card_path = HERE / "progress_card.html"
     card_path.write_text(card)
-    png = HERE.parent / "assets" / "progress.png"
+    png = HERE / "assets" / "progress.png"
     subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
                     "--window-size=1100,690", f"--screenshot={png}", str(card_path)], check=True, capture_output=True)
     card_path.unlink()

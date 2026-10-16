@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
-    <img alt="tinywmcraft" src="assets/logo-light.png" width="760">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <img alt="tinywmcraft" src="docs/assets/logo-light.png" width="760">
   </picture>
 </p>
 
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/play.gif" alt="A held-out episode: real Craftax on the left, the world model on the right, the pressed key below" width="560">
+  <img src="docs/assets/play.gif" alt="A held-out episode: real Craftax on the left, the world model on the right, the pressed key below" width="560">
 </p>
 
 <p align="center"><sub>One held-out episode. Eight real frames prime the model, then it imagines 32 frames from the recorded keys alone.
@@ -42,7 +42,7 @@ Per-seed rows and full metric vectors: [validation/colab_20261015.md](validation
 
 Every experiment of the research so far, as a dot over time, with the accepted recipe as the falling line ([interactive version](https://maharishiva.github.io/tinywmcraft/progress.html)):
 
-<p align="center"><a href="https://maharishiva.github.io/tinywmcraft/progress.html"><img src="assets/progress.png" alt="gFVD over the research history" width="760"></a></p>
+<p align="center"><a href="https://maharishiva.github.io/tinywmcraft/progress.html"><img src="docs/assets/progress.png" alt="gFVD over the research history" width="760"></a></p>
 
 ## Quickstart
 
@@ -96,9 +96,9 @@ One run is noisy: the same recipe and seed differ by up to 0.0002 gFVD between f
 - **Training windows.** Half are mined from recent high-loss windows, a quarter start at episode resets, the rest are uniform.
 - **Kernels.** At width 256 the step is bound by memory traffic, so attention, modulated norms, gated residuals and GELU run as fused Pallas kernels on NVIDIA GPUs and fall back to XLA elsewhere.
 
-![Tokenizer and causal dynamics](assets/architecture.png)
+![Tokenizer and causal dynamics](docs/assets/architecture.png)
 
-![One frame generated through eight denoising steps](assets/generation.gif)
+![One frame generated through eight denoising steps](docs/assets/generation.gif)
 
 ## Evaluation
 
@@ -110,7 +110,7 @@ It takes 143 s on a Colab A100 and 94 s on the research VM's A100 for the same w
 - **Heads:** reward correlation, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Real frames beside imagined frames" width="760">
+  <img src="docs/assets/demo.gif" alt="Real frames beside imagined frames" width="760">
 </p>
 
 <p align="center"><sub>Four held-out episodes, primed with 5 / 15 / 30 / 90 real frames, then 32 imagined frames.
