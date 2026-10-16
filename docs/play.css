@@ -2,17 +2,17 @@
   font: 12px/1.4 "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; touch-action: manipulation;
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 #play .screen { position: relative; }
-#play canvas { display: block; image-rendering: pixelated; }
-#play .msg { position: absolute; inset: 0 0 auto; height: calc(100% * 63 / 76); box-sizing: border-box; padding: 16px;
+#play canvas { display: block; image-rendering: pixelated; cursor: pointer; }
+#play .msg { position: absolute; inset: 0 0 auto; aspect-ratio: 1; box-sizing: border-box; padding: 16px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;
   background: #0a0a0abb; }
 #play .msg:empty { display: none; }
 #play .msg b { font-size: 16px; font-weight: normal; }
-#play .pad { display: grid; gap: 12px; grid-template-areas: "d" "a" "b"; }
-#play .dpad, #play .acts, #play .bar { display: grid; grid-template-columns: repeat(3, 48px); gap: 4px; }
-#play .dpad { grid-area: d; }
-#play .acts { grid-area: a; }
-#play .bar { grid-area: b; grid-template-columns: 1fr 1fr; font-size: 11px; }
+#play .bar { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+#play .st { flex: 1; color: #6a6a6a; font-size: 11px; }
+#play .st.hot { color: #ff6a13; }
+#play .bar button { height: 32px; padding: 0 12px; font-size: 11px; }
+#play .acts { display: grid; grid-template-columns: repeat(3, 48px); gap: 4px; }
 #play button { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 48px;
   padding: 0; font: inherit; color: inherit; background: #1c1c1e; border: 2px solid #3a3a3e; border-radius: 0;
   cursor: pointer; }
@@ -25,5 +25,5 @@
 @media (hover: none) { #play small { display: none; } }
 @media (max-width: 700px) {
   #play { flex-direction: column; align-items: center; }
-  #play .pad { grid-template-areas: "d a" "b a"; align-items: start; }
+  #play .acts { grid-template-columns: repeat(6, 48px); }
 }
