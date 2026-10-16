@@ -1,16 +1,15 @@
 // Play inside the tinywmcraft world model of Craftax-Classic, in the browser on WebGPU. Mounts into #play.
 // Icons are Craftax's own sprites (github.com/MichaelTMatthews/Craftax, MIT, (c) 2024 Michael Matthews).
-// onnxruntime-web, its JSPI build where WebAssembly has JSPI (Chrome 137+, Safari 27+): WebKit needs 0.5 GB to compile its
-// 17 MB of wasm, 1.1 GB for the 27 MB asyncify one, close to all iOS allows a page
-const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
-const ort = await import(ORT + ('Suspending' in WebAssembly ? 'ort.jspi.min.mjs' : 'ort.webgpu.min.mjs'));
+// The network runs on wgr.js, a small WebGPU runtime in plain JS and WGSL made for this one graph (no onnxruntime, no wasm:
+// WebKit needed 0.5 to 1.1 GB to compile onnxruntime's 17 to 27 MB of wasm, close to all iOS allows a page)
+import { create } from './wgr.js';
 
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 const q = new URLSearchParams(location.search);
-const MODEL = q.get('model') ??   // a pinned revision, so the copy kept in the browser's cache stays valid
-  'https://huggingface.co/maharishiva/tinywmcraft/resolve/9506e7a22705ae7f45e8edaee7336d036dd8ed31/web/play.onnx';
+const MODEL = q.get('model') ??   // play.onnx converted by convert_web.py; a pinned revision, so the cached copy stays valid
+  'https://huggingface.co/maharishiva/tinywmcraft/resolve/f1a5927cd526d9fbe5416c43305af6bf1ffdc26f/web/play.wgr';
 const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const MOVES = 1000, MAX_SCALE = 7;            // moves in a run, then it ends; largest pixel scale
@@ -72,7 +71,7 @@ const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), s
 const keys = root.querySelector('.keys'), acts = root.querySelector('.acts'), btns = root.querySelector('.btns');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, gpu, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
+let session, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
 let best = +localStorage.getItem('tinywmcraft.best') || 0, tut = +localStorage.getItem('tinywmcraft.tut') || 0;
 let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' or 'time' once the run is over; saving: someone
 // waits for the clip, so its progress shows
@@ -236,52 +235,9 @@ function feeds() {  // the past fed corrupted to its signal levels tau, fresh no
   return { past: z.map((v, i) => tau[i >> 9] * v + (1 - tau[i >> 9]) * eps[i]), tau, act, noise: gauss(512), rnoise: gauss(512) };
 }
 
-// On WebKit (Safari, every browser on iOS) the graph is captured: onnxruntime records its ~4500 dispatches on the first
-// run and replays them, so a step makes no bind groups. Uncaptured, every step makes ~4500 that only garbage collection
-// frees, and WebKit piles them up in the GPU process (134,000 after 30 moves) until iOS kills it. Chrome frees them in time
-// and runs uncaptured, faster there. JSPI does not tell Safari apart: Safari 27 has it. Capture needs fixed GPU buffers for
-// the inputs and outputs, used in both cases.
-const CAPTURE = /Apple/.test(navigator.vendor);
-const IN = { past: ['float32', 1, 31, 4, 4, 32], tau: ['float32', 1, 31], act: ['int32', 1, 32], noise: ['float32', 1, 4, 4, 32],
-  rnoise: ['float32', 1, 4, 4, 32] };
-const OUT = { z: ['float32', 1, 4, 4, 32], rgb: ['uint8', 63, 63, 3], reward: ['float32', 1], done: ['float32', 1] };
-
-function bind(device) {  // the graph's input and output buffers, and one mappable buffer the outputs are copied into
-  const make = ([type, ...dims]) => ort.Tensor.fromGpuBuffer(device.createBuffer({
-    size: (dims.reduce((x, y) => x * y) * (type === 'uint8' ? 1 : 4) + 15) & ~15,   // kernels read vec4s
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST }), { dataType: type, dims });
-  const all = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, make(v)])), fetches = all(OUT), at = [];
-  let size = 0;
-  for (const t of Object.values(fetches)) at.push(size), size += t.gpuBuffer.size;
-  return { device, feeds: all(IN), fetches, at, read: device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }) };
-}
-
-function pin(io) {  // onnxruntime-web 1.30 drops a bound buffer's handle after every run, so a replay of the captured graph
-  // would use dead ones; while the first run holds them, mark them permanent as it marks its own buffers (count NaN)
-  const { device } = io, f = device.createBindGroup, bufs = [...Object.values(io.feeds), ...Object.values(io.fetches)];
-  device.createBindGroup = function (d) {
-    for (const { gpuBuffer: b } of bufs) for (const k of Object.getOwnPropertySymbols(b)) if (k.description === 'gpuBufferMetadata') b[k][1] = NaN;
-    return f.call(this, d);
-  };
-  return () => { delete device.createBindGroup; io.pinned = true; };
-}
-
 async function run(s, x) {  // one call of the world model: x's arrays in, the outputs out
-  const { device, feeds, fetches, at, read } = gpu, unpin = !gpu.pinned && pin(gpu);
-  for (const k in feeds) device.queue.writeBuffer(feeds[k].gpuBuffer, 0, x[k]);
-  try {
-    await s.run(feeds, fetches);
-  } finally {
-    if (unpin) unpin();
-  }
-  const enc = device.createCommandEncoder();
-  Object.values(fetches).forEach((t, i) => enc.copyBufferToBuffer(t.gpuBuffer, 0, read, at[i], t.gpuBuffer.size));
-  device.queue.submit([enc.finish()]);
-  await read.mapAsync(GPUMapMode.READ);
-  const b = read.getMappedRange().slice(0);
-  read.unmap();
-  return { z: new Float32Array(b, at[0], 512), rgb: new Uint8Array(b, at[1], RGB), reward: new Float32Array(b, at[2], 1)[0],
-    done: new Float32Array(b, at[3], 1)[0] };
+  const o = await s.run(x);
+  return { z: o.z, rgb: o.rgb, reward: o.reward[0], done: o.done[0] };
 }
 
 async function step(a) {  // results of a step started before a reset are dropped
@@ -459,11 +415,13 @@ async function main() {
   const model = await load(MODEL, 'world model', true);
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
   stage = 'compiling';
-  const s = await ort.InferenceSession.create(model, { executionProviders: [{ name: 'webgpu' }], enableGraphCapture: CAPTURE,
-    logSeverityLevel: 3 });
-  gpu = bind(ort.env.webgpu.device);
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('no WebGPU adapter');
+  const device = await adapter.requestDevice();
+  device.lost.then(i => i.reason === 'destroyed' || fail(new Error(`the GPU was lost: ${i.message || i.reason}`)));
+  const s = await create(device, model);   // every buffer, pipeline and bind group, once
   stage = 'first run';
-  await run(s, feeds());   // warm-up: compiles the shaders and captures the graph before the first keypress
+  await run(s, feeds());   // warm-up: the first run waits for the GPU to finish compiling
   stage = 'move';
   session = s;
   msg.textContent = '';

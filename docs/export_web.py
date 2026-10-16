@@ -1,4 +1,4 @@
-"""Export the world model to one ONNX graph for in-browser play (onnxruntime-web on WebGPU) and pack start states.
+"""Export the world model to one ONNX graph for in-browser play (convert_web.py turns it into play.wgr) and pack start states.
 
     python docs/export_web.py --model runs/record1/model.npz
 
