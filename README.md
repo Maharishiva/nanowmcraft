@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<h3 align="center">Play a world model trained in 10 minutes for 10 cents.</h3>
+<h3 align="center">Play a world model trained in 10 minutes for $0.1 of compute.</h3>
 
 <p align="center">
   <a href="https://maharishiva.github.io/tinywmcraft/"><b>Play it in your browser</b></a> ·
@@ -40,7 +40,7 @@ It is also an open speedrun: lower the generation error (gFVD) in one 10-minute 
 | [kernels.py](kernels.py) | fused Pallas kernels for attention, norms and activations on NVIDIA GPUs |
 | [eval.py](eval.py) | the frozen benchmark |
 | [play_wm.py](play_wm.py) | play inside a trained model with your keyboard |
-| [microwm.py](microwm.py) | the whole model on one page: under 250 lines, no custom kernels |
+| [train_tiny.py](train_tiny.py) | the whole model on one page: under 250 lines, no custom kernels |
 | [program.md](program.md) | rules, the model interface, and how to submit a record |
 
 ## Records

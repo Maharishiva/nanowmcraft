@@ -2,13 +2,13 @@
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>microwm.py: a pixel world model on one page</title>
+<title>train_tiny.py: a pixel world model on one page</title>
 <meta name="description" content="The complete tinywmcraft world model in one Python file: tokenizer, world model, heads and training, under 250 lines.">
 <meta name="theme-color" content="#0a0a0a">
 <meta name="color-scheme" content="dark">
 <meta property="og:type" content="article">
-<meta property="og:url" content="https://maharishiva.github.io/tinywmcraft/microwm.html">
-<meta property="og:title" content="microwm.py: a pixel world model on one page">
+<meta property="og:url" content="https://maharishiva.github.io/tinywmcraft/train_tiny.html">
+<meta property="og:title" content="train_tiny.py: a pixel world model on one page">
 <meta property="og:description" content="Tokenizer, world model, heads and training in under 250 lines. Print it as a poster.">
 <meta property="og:image" content="https://maharishiva.github.io/tinywmcraft/assets/play.gif">
 <meta name="twitter:card" content="summary_large_image">
@@ -38,11 +38,11 @@ header .print { display:none; }
 </head>
 <body>
 <header>
-<b>microwm.py</b>
+<b>train_tiny.py</b>
 <span id="n">loading…</span>
 <span>the whole model: tokenizer, world model, heads, training. No custom kernels.</span>
 <a href="./">← tinywmcraft</a>
-<a href="https://github.com/Maharishiva/tinywmcraft/blob/main/microwm.py">github</a>
+<a href="https://github.com/Maharishiva/tinywmcraft/blob/main/train_tiny.py">github</a>
 <span class="print">maharishiva.github.io/tinywmcraft</span>
 </header>
 <main id="code"></main>
@@ -78,11 +78,11 @@ function render(src) {
 }
 
 (async () => {
-  for (const u of ["https://raw.githubusercontent.com/Maharishiva/tinywmcraft/main/microwm.py", "../microwm.py"]) {
+  for (const u of ["https://raw.githubusercontent.com/Maharishiva/tinywmcraft/main/train_tiny.py", "../train_tiny.py"]) {
     try { const r = await fetch(u); if (r.ok) return render(await r.text()); } catch (e) {}
   }
   document.getElementById("n").textContent = "";
-  document.getElementById("code").innerHTML = `Could not load microwm.py. Read it on <a href="https://github.com/Maharishiva/tinywmcraft/blob/main/microwm.py">GitHub</a>.`;
+  document.getElementById("code").innerHTML = `Could not load train_tiny.py. Read it on <a href="https://github.com/Maharishiva/tinywmcraft/blob/main/train_tiny.py">GitHub</a>.`;
 })();
 </script>
 </body></html>
