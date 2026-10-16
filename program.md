@@ -10,7 +10,7 @@ The current record and every earlier one are on the [leaderboard](https://mahari
 - **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft_500k) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
 - **Training.** At most 600 s per run on one A100 40GB: data loading, tokenizer, compilation, everything. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint.
 - **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 180 s on the same GPU; the record takes about 155 s. Anything else about generation is yours: the model family, the sampler, the number of steps.
-- **One frame per action.** The model generates frame by frame and never sees future actions. The interface below enforces this.
+- **One frame per action.** The model generates frame by frame and never sees future actions or frames. The interface below hands it one action at a time; reading the eval data, caching frames across calls or other tricks around it are against the rules and checked in review.
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
 - **Gates.** Both measured in the maintainer's rerun, on the same machine and seeds:
   - gFVD: the record's mean minus the new mean must exceed `1.65 * sqrt((sd_record^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. With the current record (sd 1.9) and a new recipe of sd 1.0, the new mean must be below about 12.6. Stable recipes need a smaller margin.

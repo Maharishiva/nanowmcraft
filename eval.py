@@ -12,6 +12,7 @@ Reward and termination heads, on the first 512 windows plus one window per recor
 frame, so the fatal transition is its last one):
   reward_corr / reward_recall / reward_precision   teacher-forced per-step reward against the record; an event is
         |reward| > 0.05 (recorded rewards are multiples of 0.1).
+  reward_ap  average precision of |predicted reward| as a score for the recorded events: threshold-free.
   done_auc   probability that a recorded death is scored above a recorded survival, teacher-forced.
   imagined_reward_corr / imagined_return_corr / imagined_done_auc   the same heads read from the model's own rollout
         under the true actions, per step, over the 16-step return, and for the deaths at the end of the horizon.
@@ -113,7 +114,8 @@ def clip_feats(feat, video):
         v = video[start:start + batch].astype(np.float32) / 255
         stacked = np.concatenate([np.repeat(v[:, :1], CLIP - 1, 1), v], 1)
         clips = np.concatenate([stacked[:, t:t + horizon] for t in range(CLIP)], -1)
-        out.append(np.asarray(feat(jnp.asarray(clips.reshape(-1, H, W, 3 * CLIP)))))
+        with jax.default_matmul_precision("tensorfloat32"):   # fixed, whatever the module sets
+            out.append(np.asarray(feat(jnp.asarray(clips.reshape(-1, H, W, 3 * CLIP)))))
     return np.concatenate(out)
 
 
@@ -182,6 +184,13 @@ def corr(a, b):
     return float(np.corrcoef(np.asarray(a, np.float64).ravel(), np.asarray(b, np.float64).ravel())[0, 1])
 
 
+def average_precision(scores, labels):
+    """Area under the precision-recall curve: the mean precision at the rank of each positive."""
+    order = np.argsort(-np.asarray(scores, np.float64).ravel(), kind="stable")
+    hits = (np.asarray(labels).ravel() > 0.5)[order]
+    return float(np.sum(np.cumsum(hits)[hits] / (np.flatnonzero(hits) + 1)) / max(hits.sum(), 1))
+
+
 def auc(scores, labels):
     """Probability that a random positive scores above a random negative (rank statistic)."""
     scores, labels = np.asarray(scores, np.float64).ravel(), np.asarray(labels).ravel() > 0.5
@@ -198,8 +207,8 @@ def evaluate_heads(wm, model, data, indices, n_uniform):
         frames, actions, rewards, dones = window_batch(data, indices[start:start + BATCH])
         key = jax.random.PRNGKey(int(np.random.SeedSequence([EVAL_SEED, 1, start]).generate_state(1)[0]))
         kr, kz = jax.random.split(jax.random.fold_in(key, 1))
+        imagined = rollout(wm, model, frames, actions, actions[:, CTX:], kr)   # before it sees the future
         forced = wm.heads(model, frames, actions, key)
-        imagined = rollout(wm, model, frames, actions, actions[:, CTX:], kr)
         rolled = wm.heads(model, np.concatenate([frames[:, :CTX], imagined], 1), actions, kz)
         for k, v in zip(("reward", "done", "im_reward", "im_done"), (*forced, *(v[:, CTX:] for v in rolled))):
             out[k].append(np.asarray(v))
@@ -210,6 +219,7 @@ def evaluate_heads(wm, model, data, indices, n_uniform):
     event, hit = np.abs(true) > 1e-6, np.abs(reward) > EVENT
     return {"reward_corr": corr(reward, true), "reward_recall": float((hit & event).sum() / max(event.sum(), 1)),
             "reward_precision": float((hit & event).sum() / max(hit.sum(), 1)),
+            "reward_ap": average_precision(np.abs(reward), event),
             "done_auc": auc(o["done"][:, 1:], o["true_done"][:, 1:]),
             "imagined_reward_corr": corr(o["im_reward"][:n_uniform], o["true_reward"][:n_uniform, CTX:]),
             "imagined_return_corr": corr(o["im_reward"][:n_uniform].sum(1), o["true_reward"][:n_uniform, CTX:].sum(1)),
@@ -239,7 +249,7 @@ def main():
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tag": a.tag or a.model.parent.name,
            "note": a.note, "gFVD": gfvd, "AF": af, **heads, "train_seed": meta["cfg"]["seed"], "n_win": a.windows,
            "ctx": CTX, "hor": HOR, "train_s": meta["train_s"], "eval_s": eval_s,
-           "in_budget": meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S,
+           "in_budget": a.windows == N_WIN and meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S,
            "module": a.module, "checkpoint": str(a.model)}
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open("a") as fh:

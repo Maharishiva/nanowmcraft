@@ -40,7 +40,7 @@ root.innerHTML = `<div class="screen"><canvas width="63" height="${H}"></canvas>
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const acts = root.querySelector('.acts'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, starts, z, tau, act, mux, frames = [], score = 0, episode = 0, busy = false, dead = false;
+let session, starts, z, tau, act, mux, frames = [], score = 0, episode = 0, busy = false, dead = false, saving = false;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 
@@ -162,23 +162,28 @@ async function save() {  // the last CLIP frames as an MP4 under the link: 8x ne
   const source = new CanvasSource(out, { codec: 'avc', bitrate: QUALITY_HIGH });
   output.addVideoTrack(source, { frameRate: 6 });
   await output.start();
-  for (const [i, f] of frames.entries()) {
+  const clip = frames.slice();   // play goes on while it encodes
+  for (const [i, f] of clip.entries()) {
     one.getContext('2d').putImageData(f, 0, 0);
     c.drawImage(one, 0, TOP * G, out.width, H * G);
-    await source.add(i / 6, i === frames.length - 1 ? 2 : 1 / 6);
+    await source.add(i / 6, i === clip.length - 1 ? 2 : 1 / 6);
   }
   await output.finalize();
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([output.target.buffer], { type: 'video/mp4' }));
   link.download = 'tinywmcraft.mp4';
   link.click();
-  status(`saved ${frames.length} frames as tinywmcraft.mp4`);
+  status(`saved ${clip.length} frames as tinywmcraft.mp4`);
 }
 
 const fail = e => { msg.textContent = String(e.message ?? e); status('error'); };
 
 function press(a) {  // an action index, 'reset' or 'save'
-  if (a === 'save') return frames.length && save().catch(fail);
+  if (a === 'save') {
+    if (!frames.length || saving) return;
+    saving = true;
+    return save().catch(fail).finally(() => { saving = false; });
+  }
   if (!session) return;
   if (a === 'reset') return reset();
   if (!busy && !dead) step(a).catch(fail);
