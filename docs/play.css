@@ -15,24 +15,42 @@
 #play .prog i { display: block; height: 100%; background: #ff6a13; }
 #play .prog.wait i { animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: .35; } }
-#play .bar { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
-#play .st { flex: 1; color: #6a6a6a; font-size: 11px; }
+#play .st { margin-top: 8px; min-height: 1.4em; color: #6a6a6a; font-size: 11px; }
 #play .st.hot { color: #ff6a13; }
-#play .bar button { height: 32px; padding: 0 12px; font-size: 11px; }
-#play .acts { display: grid; grid-template-columns: repeat(3, 48px); grid-auto-rows: 48px; gap: 4px; }
-#play .acts button { position: relative; height: auto; border-width: var(--px, 2px); }
-#play .acts button.on { background: #ff6a13; border-color: #ff6a13; }
-#play .acts button.on img.k { filter: brightness(0); }
+
+/* the action keys and the clip buttons: drawn like the keys under the frame, one game pixel of border */
+#play .side { display: flex; flex-direction: column; transition: opacity .2s; }
+#play.off .side { opacity: .15; pointer-events: none; }
+#play .acts, #play .btns { display: grid; grid-template-columns: repeat(3, 48px); grid-auto-rows: 48px; gap: 4px; }
+#play .acts { position: relative; }
 #play button { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 48px;
   padding: 0; font: inherit; color: inherit; background: #1c1c1e; border: 2px solid #3a3a3e; border-radius: 0;
   cursor: pointer; }
+#play .side button { position: relative; height: auto; border-width: var(--px, 2px); }
 #play button:active { background: #3a3a3e; }
+#play .acts button.on { background: #ff6a13; border-color: #ff6a13; }
+#play .acts button.on img.k { filter: brightness(0); }
 #play .msg button { padding: 0 10px; }
 #play .msg .hot { background: #ff6a13; border-color: #ff6a13; color: #0a0a0a; }
 #play img { width: calc(7 * var(--px, 5px)); height: calc(7 * var(--px, 5px)); image-rendering: pixelated; }
-#play img.k { position: absolute; right: 3px; bottom: 3px; width: auto; height: var(--label, 10px); }
+#play img.px { width: auto; }
+#play img.k { position: absolute; right: 3px; bottom: 3px; }
 @media (hover: hover) { #play button:hover { border-color: #ff6a13; } }
 @media (hover: none) { #play img.k { display: none; } }
+
+/* the first-visit tutorial: a tag pointing at the movement keys, then at the crafting keys, which blink */
+#play .tip, #play .ring { display: none; position: absolute; z-index: 2; pointer-events: none; }
+#play .tip { box-sizing: border-box; padding: 6px 10px; background: #ff6a13; color: #0a0a0a; text-align: center; }
+#play .tip::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  border: 7px solid transparent; border-top-color: #ff6a13; }
+#play .view .tip { left: 6%; right: 6%; bottom: calc(27 * var(--px, 5px)); }
+#play .acts .tip { left: 0; right: 0; bottom: calc(100% + 9px); }
+#play .ring { left: 0; right: 0; bottom: 0; height: calc(25 * var(--px, 5px)); box-sizing: border-box;
+  border: 2px solid #ff6a13; animation: blink 1s steps(2) infinite; }
+#play[data-tut="0"] .view .tip, #play[data-tut="0"] .ring, #play[data-tut="1"] .acts .tip { display: block; }
+#play[data-tut="1"] .acts button { animation: hl 1s steps(2) infinite; }
+@keyframes hl { 50% { border-color: #ff6a13; } }
+
 @media (max-width: 700px) {
   #play { flex-direction: column; align-items: center; }
 }

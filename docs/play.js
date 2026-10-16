@@ -10,7 +10,7 @@ const MODEL = q.get('model') ??   // a pinned revision, so the copy kept in the 
   'https://huggingface.co/maharishiva/tinywmcraft/resolve/9506e7a22705ae7f45e8edaee7336d036dd8ed31/web/play.onnx';
 const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
-const CLIP = 5000, MAX_SCALE = 7;             // moves kept for the clip (about 14 KB each), largest pixel scale
+const MOVES = 1000, MAX_SCALE = 7;            // moves in a run, then it ends; largest pixel scale
 const L = 31 * 512, RGB = 63 * 63 * 3;        // one 31-frame latent window, one frame
 const TOP = 7, H = TOP + 88, MAP = 49;        // canvas: the score strip, the frame, the keys; the map part of the frame
 const BG = '#0a0a0a', FG = '#f0f0ee', ORANGE = '#ff6a13', KEY = '#1c1c1e', EDGE = '#3a3a3e', CAP = '#aaaaa8';
@@ -22,8 +22,16 @@ const ARROWS = { ArrowLeft: 1, ArrowRight: 2, ArrowUp: 3, ArrowDown: 4 };
 const NAMES = ['noop', 'left', 'right', 'up', 'down', 'do', 'sleep', 'place stone', 'place table', 'place furnace',
   'place plant', 'make wood pickaxe', 'make stone pickaxe', 'make iron pickaxe', 'make wood sword',
   'make stone sword', 'make iron sword'];
-// the keyboard of play.gif under the frame: action, x, y, width of each key; -1 shows any other key pressed
-const BOARD = [[3, 10, 0, 9], [1, 0, 10, 9], [4, 10, 10, 9], [2, 20, 10, 9], [5, 31, 10, 23], [-1, 31, 0, 15]];
+const TOUCH = matchMedia('(pointer: coarse)').matches;
+// the keyboard of play.gif under the frame: action, x, y, width of each key (-1 shows any other key pressed), and the reward
+// square's x; WASD on the right under the thumb on touch screens; SPACE exactly as wide as the two boxes above it
+const [BOARD, RX] = TOUCH
+  ? [[[3, 41, 0, 9], [1, 31, 10, 9], [4, 41, 10, 9], [2, 51, 10, 9], [5, 2, 10, 28], [-1, 2, 0, 18]], 21]
+  : [[[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], 52];
+const READY = TOUCH ? 'ready: tap the keys or the map' : 'ready: W A S D to move, SPACE to hit';
+const TIPS = TOUCH  // the first-visit tutorial: the movement keys until the first move, then crafting until the first craft
+  ? ['tap these keys to move and hit,<br>or tap the map: around you to walk, on you to hit', 'tap to place and craft']
+  : ['W A S D to move, SPACE to hit:<br>your keyboard, these keys, or click the map', 'click to place and craft'];
 const ICONS = [8, 7, 9, 10, 6, 0, 11, 12, 13, 14, 15, 16];
 const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111',
@@ -33,36 +41,55 @@ const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   G: '011100101101011', H: '101101111101101', I: '111010010010111', M: '101111111101101', N: '110101101101101',
   O: '010101101101010', U: '101101101101111', V: '101101101101010', Y: '101101010010010', '.': '000000000000010',
   '/': '001001010100100', 0: '111101101101111', 7: '111001001001001', 8: '111101111101111', 9: '111101111001111',
-  ' ': '000000000000000', '!': '010010010000010',
+  ' ': '000000000000000', '!': '010010010000010', L: '100100100100111',
 };
 // the clip can go to the system share sheet only where the browser shares files
 const FILES = !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] });
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const root = document.getElementById('play');
-root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${H}"></canvas><div class="msg"></div></div>
-<div class="bar"><span class="st"></span><button data-a="save">save clip</button><button data-a="share">share</button>
-<button data-a="reset">new world</button></div></div>
-<div class="acts">${ICONS.map(a => `<button data-a="${a}" title="${NAMES[a]}">` +
-  `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}"><img class="k" src="${label(CAPS[a])}" alt=""></button>`).join('')}</div>`;
+const pix = (s, color = CAP) => `<img class="px" src="${label(s, color)}" style="height:calc(var(--fp) * ${6 * s.split('\n').length - 1})" alt="">`;
+root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${H}"></canvas><div class="msg"></div>
+<div class="ring"></div><div class="tip">${TIPS[0]}</div></div><div class="st"></div></div>
+<div class="side"><div class="acts">${ICONS.map(a => `<button data-a="${a}" title="${NAMES[a]}">` +
+  `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">${pix(CAPS[a]).replace('class="px"', 'class="px k"')}</button>`).join('')}
+<div class="tip">${TIPS[1]}</div></div><div class="btns"><button data-a="save" title="save the clip">${pix('SAVE\nCLIP')}</button>
+<button data-a="share" title="share the clip">${pix('SHARE', ORANGE)}</button><button data-a="reset" title="new world">${pix('NEW\nWORLD')}</button>
+</div></div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
-const acts = root.querySelector('.acts'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+const acts = root.querySelector('.acts'), btns = root.querySelector('.btns'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, gpu, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, episode = 0;
-let best = +localStorage.getItem('tinywmcraft.best') || 0, busy = false, dead = false, saving = false;
+let session, gpu, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
+let best = +localStorage.getItem('tinywmcraft.best') || 0, tut = +localStorage.getItem('tinywmcraft.tut') || 0;
+let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' or 'time' once the run is over
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 
-function fit() {  // the largest integer scale that fits; the action keys span the map's height beside it, or its width under it
-  const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth;
+function fit() {  // the largest integer scale that fits. Beside the game the action keys span the map and the three buttons
+  // the inventory under it, so the column is exactly as tall as the frame; under the game both are as wide as it
+  const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
   const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
   const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;   // one game pixel between keys, as under the frame
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
-  Object.assign(acts.style, { gridTemplateColumns: `repeat(${row ? 3 : 6}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
-    marginTop: row ? TOP * s + 'px' : '' });
+  for (const el of [acts, btns]) Object.assign(el.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gap: s + 'px' });
+  Object.assign(acts.style, { gridAutoRows: b + 'px', marginTop: row ? TOP * s + 'px' : '' });
+  Object.assign(btns.style, { gridAutoRows: (row ? (63 - MAP - 1) * s : b) + 'px', marginTop: s + 'px' });
+  for (const el of btns.children) el.style.gridColumn = `span ${cols / 3}`;
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
-  root.style.setProperty('--label', 5 * Math.max(1, s >> 1) + 'px');
+  root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
   msg.style.padding = `${TOP * s}px 16px ${25 * s}px`;   // what shows over the game sits on the frame
+}
+
+function hint() {  // the tutorial step on show, and the dimmed controls while the model loads
+  root.classList.toggle('off', !session);
+  root.dataset.tut = session && tut < 2 ? tut : '';
+}
+
+function learnt(a) {  // the tutorial moves on after the first move, then after the first craft or 30 more moves
+  if (tut === 0 && a >= 1 && a <= 5 || tut === 1 && (ICONS.includes(a) || moves >= 30)) {
+    localStorage.setItem('tinywmcraft.tut', ++tut);
+    hint();
+  }
 }
 
 function text(s, x, y, color, c = ctx, u = 1) {  // the 3x5 pixel font, u screen pixels per font pixel; returns the end x
@@ -74,10 +101,10 @@ function text(s, x, y, color, c = ctx, u = 1) {  // the 3x5 pixel font, u screen
   return x;
 }
 
-function label(s) {  // a key name in the pixel font, as an image for the buttons
-  const c = document.createElement('canvas');
-  [c.width, c.height] = [4 * s.length - 1, 5];
-  text(s, 0, 0, CAP, c.getContext('2d'));
+function label(s, color = CAP) {  // lines of the pixel font, centred, as an image for the buttons
+  const lines = s.split('\n'), c = document.createElement('canvas'), w = Math.max(...lines.map(l => 4 * l.length - 1));
+  [c.width, c.height] = [w, 6 * lines.length - 1];
+  lines.forEach((l, i) => text(l, (w - 4 * l.length + 1) >> 1, 6 * i, color, c.getContext('2d')));
   return c.toDataURL();
 }
 
@@ -87,6 +114,10 @@ function head(c, f) {  // the score and the best score
   text(String(f.score), text('SCORE', 2, 1, CAP, c) + 2, 1, f.r > 0.5 ? ORANGE : FG, c);
   const right = `HI ${f.best}`;
   text(right, 62 - 4 * right.length, 1, CAP, c);
+  c.fillStyle = EDGE;   // how much of the run is left, a line along the bottom
+  c.fillRect(0, TOP - 1, 63, 1);
+  c.fillStyle = CAP;
+  c.fillRect(0, TOP - 1, Math.round(63 * f.moves / MOVES), 1);
 }
 
 function board(c, a, r) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
@@ -97,48 +128,47 @@ function board(c, a, r) {  // the keys under the frame, the pressed one in orang
   for (const [k, x, y, w] of BOARD) {
     const on = k < 0 ? other : k === a, cap = k < 0 ? (other ? CAPS[a] : '') : CAPS[k];
     c.fillStyle = on ? ORANGE : EDGE;
-    c.fillRect(x + 4, y + y0, w, 9);
+    c.fillRect(x, y + y0, w, 9);
     c.fillStyle = on ? ORANGE : KEY;
-    c.fillRect(x + 5, y + y0 + 1, w - 2, 7);
-    text(cap, x + 4 + ((w - 4 * cap.length + 1) >> 1), y + y0 + 2, on ? BG : CAP, c);
+    c.fillRect(x + 1, y + y0 + 1, w - 2, 7);
+    text(cap, x + ((w - 4 * cap.length + 1) >> 1), y + y0 + 2, on ? BG : CAP, c);
   }
   const fill = Math.round(7 * Math.min(Math.max(r, 0), 1));
   c.fillStyle = EDGE;
-  c.fillRect(53, y0, 9, 9);
+  c.fillRect(RX, y0, 9, 9);
   c.fillStyle = KEY;
-  c.fillRect(54, y0 + 1, 7, 7);
+  c.fillRect(RX + 1, y0 + 1, 7, 7);
   c.fillStyle = r > 0.5 ? ORANGE : CAP;
-  c.fillRect(54, y0 + 8 - fill, 7, fill);
+  c.fillRect(RX + 1, y0 + 8 - fill, 7, fill);
 }
 
-function wasted(c, score) {  // Minecraft's death screen: its red gradient over the frame, DEAD! and the score
-  const g = c.createLinearGradient(0, TOP, 0, TOP + 63);
-  g.addColorStop(0, 'rgba(150, 20, 20, 0.42)');
-  g.addColorStop(1, 'rgba(128, 40, 40, 0.6)');
+function over(c, f) {  // the end of a run: Minecraft's red death screen, or a dark one after the last move; the title, the score
+  const g = c.createLinearGradient(0, TOP, 0, TOP + 63), dead = f.end === 'dead', title = dead ? 'DEAD!' : 'THE END';
+  g.addColorStop(0, dead ? 'rgba(150, 20, 20, 0.42)' : 'rgba(10, 10, 10, 0.42)');
+  g.addColorStop(1, dead ? 'rgba(128, 40, 40, 0.6)' : 'rgba(10, 10, 10, 0.6)');
   c.fillStyle = g;
   c.fillRect(0, TOP, 63, 63);
-  const shadowed = (s, x, y, color, u = 1) => (text(s, x + 1, y + 1, 'rgba(40, 0, 0, 0.6)', c, u), text(s, x, y, color, c, u));
-  shadowed('DEAD!', 12, TOP + 10, FG, 2);
-  const n = String(score), x = (63 - 24 - 4 * n.length + 1) >> 1;
+  const shadowed = (s, x, y, color, u = 1) => (text(s, x + 1, y + 1, 'rgba(10, 0, 0, 0.6)', c, u), text(s, x, y, color, c, u));
+  shadowed(title, (63 - 8 * title.length + 2) >> 1, TOP + 10, FG, 2);
+  const n = String(f.score), x = (63 - 24 - 4 * n.length + 1) >> 1;
   shadowed(n, shadowed('SCORE ', x, TOP + 24, FG), TOP + 24, ORANGE);
 }
 
-function paint(c, f) {  // one move: the score, the frame with a +1 for a predicted reward over 0.5, the keys, the death screen
+function paint(c, f) {  // one move: the score, the frame with a +1 for a predicted reward over 0.5, the keys, the end screen
   const img = c.createImageData(63, 63);
   for (let i = 0; i < 63 * 63; i++) img.data.set([f.rgb[3 * i], f.rgb[3 * i + 1], f.rgb[3 * i + 2], 255], 4 * i);
   c.putImageData(img, 0, TOP);
   if (f.r > 0.5) text('+1', 55, TOP + 1, FG, c);
   head(c, f);
   board(c, f.a, f.r);
-  if (f.dead) wasted(c, f.score);
+  if (f.end) over(c, f);
 }
 
 function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the frame, key and reward, not the pixels drawn
-  const f = { rgb, a, r, score, best, dead };
+  const f = { rgb, a, r, score, best, moves, end };
   paint(ctx, f);
   tick++;
   frames.push(f);
-  if (frames.length > CLIP) frames.shift();
 }
 
 const gauss = n => {  // standard normal, Box-Muller
@@ -159,11 +189,11 @@ function reset() {  // a random real start: 31 clean latents with their incoming
   act = new Int32Array(32);
   act.set(starts.acts.subarray(k * 31, k * 31 + 31));
   frames = [];
-  score = 0;
-  dead = false;
+  score = moves = 0;
+  end = '';
   msg.textContent = '';
   draw(starts.rgb.subarray(k * RGB, (k + 1) * RGB));
-  if (session) status('ready: W A S D to move, SPACE to hit', true);
+  if (session) status(READY, true);
 }
 
 function feeds() {  // the past fed corrupted to its signal levels tau, fresh noise every call
@@ -230,13 +260,14 @@ async function step(a) {  // results of a step started before a reset are droppe
     tau.copyWithin(0, 1);
     tau[30] = 0.9;
     act.copyWithin(0, 1);
-    dead = o.done > DONE_THRESHOLD;
+    end = o.done > DONE_THRESHOLD ? 'dead' : ++moves >= MOVES ? 'time' : '';
     const r = o.reward;
     score += r > 0.5;
     if (score > best) localStorage.setItem('tinywmcraft.best', best = score);
     draw(o.rgb, a, r);
     status(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
-    if (!dead) return;
+    learnt(a);
+    if (!end) return;
     msg.innerHTML = '<div class="end"><button data-a="save">save clip</button><button class="hot" data-a="share">share</button>' +
       '<button data-a="reset">new world</button></div>';
     clip().catch(() => {});   // encoded now, so share opens at once
@@ -259,16 +290,14 @@ async function encode() {  // the run as an MP4 under the link: 8x nearest-neigh
   text(LINK[1], text(LINK[0], x, y, CAP, c, U), y, ORANGE, c, U);
   const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
   const source = new CanvasSource(out, { codec: 'avc', bitrate: QUALITY_HIGH });
-  // 6 fps, faster for long runs up to 30 fps, then every k-th move, so that a run of any length fits in about a minute
-  const k = Math.ceil(fs.length / (30 * 58)), shown = fs.filter((_, i) => i % k === 0 || i === fs.length - 1);
-  const fps = Math.max(6, Math.min(30, Math.round(shown.length / 58))), oc = one.getContext('2d');
+  const fps = Math.max(6, Math.round(fs.length / 58)), oc = one.getContext('2d');   // 6 fps, faster up to a minute for 1000 moves
   output.addVideoTrack(source, { frameRate: fps });
   await output.start();
-  for (const [i, f] of shown.entries()) {
+  for (const [i, f] of fs.entries()) {
     paint(oc, f);
     c.drawImage(one, 0, LINE * G, out.width, H * G);
-    await source.add(i / fps, i === shown.length - 1 ? 2 : 1 / fps);
-    if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / shown.length)}%`);
+    await source.add(i / fps, i === fs.length - 1 ? 2 : 1 / fps);
+    if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / fs.length)}%`);
   }
   await output.finalize();
   return new File([output.target.buffer], name, { type: 'video/mp4' });
@@ -321,7 +350,7 @@ function press(a) {  // an action index, 'reset', 'save' or 'share'
   }
   if (!session) return;
   if (a === 'reset') return reset();
-  if (busy || dead) return;
+  if (busy || end) return;
   for (const b of acts.children) b.classList.toggle('on', +b.dataset.a === a);
   step(a).catch(fail);
 }
@@ -367,7 +396,8 @@ async function main() {
   await run(s, feeds());   // warm-up: compiles the shaders and captures the graph before the first keypress
   session = s;
   msg.textContent = '';
-  status('ready: W A S D to move, SPACE to hit', true);
+  hint();
+  status(READY, true);
   mux = import(MEDIABUNNY);   // the MP4 encoder, loaded in the background so saving a clip is quick
 }
 
@@ -376,8 +406,12 @@ root.onclick = e => {
   const b = e.target.closest('button');
   if (b) return press(/^\d+$/.test(b.dataset.a) ? +b.dataset.a : b.dataset.a);
   if (e.target !== canvas) return;
-  const s = canvas.clientWidth / 63, x = e.offsetX / s - 4, y = e.offsetY / s - TOP - 66;   // a click on a drawn key
-  const k = BOARD.find(([a, kx, ky, w]) => a >= 0 && x >= kx && x < kx + w && y >= ky && y < ky + 9);
+  const s = canvas.clientWidth / 63, x = e.offsetX / s, y = e.offsetY / s - TOP;
+  if (y >= 0 && y < MAP) {   // on the map: the player's tile is DO, elsewhere a step towards the click
+    const dx = x - 31.5, dy = y - 24.5;
+    return press(Math.max(Math.abs(dx), Math.abs(dy)) < 3.5 ? 5 : Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 1 : 2) : (dy < 0 ? 3 : 4));
+  }
+  const k = BOARD.find(([a, kx, ky, w]) => a >= 0 && x >= kx && x < kx + w && y - 66 >= ky && y - 66 < ky + 9);   // a drawn key
   if (k) press(k[0]);
 };
 addEventListener('keydown', e => {
@@ -389,5 +423,6 @@ addEventListener('keydown', e => {
 });
 addEventListener('resize', fit);
 fit();
+hint();
 if (navigator.gpu) main().catch(fail);
 else msg.innerHTML = '<b>needs WebGPU</b><span>Chrome, Edge, or Safari 26+</span>';
