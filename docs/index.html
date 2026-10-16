@@ -169,7 +169,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <p>Record gFVD, from the baseline on. Lower is better; each point links to its pull request. Beat it with a pull request on <a href="https://github.com/Maharishiva/tinywmcraft">GitHub</a>.</p>
 <svg id="chart" role="img" aria-label="Record gFVD over time"></svg>
 <div class="scroll"><table id="lb">
-<thead><tr><th class="n">#</th><th>date</th><th>author</th><th>change</th><th class="n">gFVD ↓</th><th class="n">AF ↑</th><th class="n">reward<br>precision ↑</th><th class="n">train s</th><th>code</th><th>weights</th></tr></thead>
+<thead><tr><th class="n">#</th><th>date</th><th>author</th><th>change</th><th class="n">gFVD ↓</th><th class="n">AF ↑</th><th class="n">reward<br>AP ↑</th><th class="n">train s</th><th>code</th><th>weights</th></tr></thead>
 <tbody><tr><td colspan="10">loading records.jsonl…</td></tr></tbody>
 </table></div>
 <p class="note">gFVD is shown ×10⁴ everywhere, so 14.7 means 0.00147. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold and scored by eval.py on a Colab A100. Train s is the slowest seed. Row 0, dim, is the <a href="train_tiny.html">train_tiny.py</a> baseline. Data: <a href="records.jsonl">records.jsonl</a>.</p>
@@ -181,7 +181,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
 <dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating must take at most 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
-<dt>gates</dt><dd>gFVD beats the record by a noise-aware margin. AF and every head metric stay above fixed floors, 95% of the train_tiny.py baseline. Records are ranked on gFVD alone.</dd>
+<dt>gates</dt><dd>gFVD beats the record by a noise-aware margin. AF, reward correlation, reward AP and done AUC stay above fixed floors, 95% of the train_tiny.py baseline. Records are ranked on gFVD alone.</dd>
 </dl>
 <p>To submit:</p>
 <ol>
@@ -209,7 +209,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <p>The frozen evaluator takes 2048 windows from held-out episodes, primes the model on eight real frames and generates 16 frames open-loop.</p>
 <p><b>gFVD ↓</b> (×10⁴) is the Fréchet distance between real and generated 4-frame clips in the feature space of a fixed random CNN. It needs no external checkpoint and is not comparable to I3D FVD.</p>
 <p><b>AF ↑</b> is action following: the share of windows where the true actions predict the salient pixels better than random actions, under the same context and noise. A model that ignores actions scores 0.5.</p>
-<p><b>Heads</b> are scored by reward correlation, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.</p>
+<p><b>Heads</b> are scored by reward correlation, reward AP, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.</p>
 <figure><img class="px" src="assets/demo.gif" alt="Real frames beside imagined frames for four held-out episodes" width="774" height="438" loading="lazy"><figcaption>Four held-out episodes, primed with 5 / 15 / 30 / 90 real frames, then 32 imagined frames. Ground truth left, world model right, same actions.</figcaption></figure>
 
 <h2 id="tiny">the whole model on one page</h2>
@@ -234,7 +234,7 @@ function table(rows) {
   $("#lb tbody").innerHTML = rows.map(r => `<tr class="${r.n ? (r.n === top ? "rec" : "") : "base"}">
 <td class="n" data-l="#">${r.n ?? 0}</td><td class="m">${esc(r.date)}</td><td class="m">${a("https://github.com/" + encodeURIComponent(r.author || ""), r.author)}</td>
 <td class="ch">${esc(r.change)}</td><td class="n"><span class="g">${fx(r.gFVD, 1)}</span> <span class="sd">± ${fx(r.gFVD_sd, 1)}</span></td>
-<td class="n" data-l="AF ">${fx(r.AF, 3)}</td><td class="n" data-l="precision ">${fx(r.reward_precision, 3)}</td><td class="n m" data-l="train s ">${fx(r.train_s, 0)}</td>
+<td class="n" data-l="AF ">${fx(r.AF, 3)}</td><td class="n" data-l="reward AP ">${fx(r.reward_ap, 3)}</td><td class="n m" data-l="train s ">${fx(r.train_s, 0)}</td>
 <td class="m">${a(r.pr, prName(r.pr || ""))}</td><td class="m">${a(r.checkpoints, "hf")}</td></tr>`).join("");
 }
 

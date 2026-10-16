@@ -14,11 +14,11 @@ The current record and every earlier one are on the [leaderboard](https://mahari
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
 - **Gates.** Measured in the maintainer's rerun, on the same machine and seeds. Records are ranked on gFVD alone:
   - gFVD: the record's mean minus the new mean must exceed `1.65 * sqrt((sd_record^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. With the current record (sd 1.9) and a new recipe of sd 1.0, the new mean must be below about 12.6. Stable recipes need a smaller margin.
-  - AF and every reward and termination metric: the new three-seed mean stays at or above a fixed floor, 95% of the `train_tiny.py` baseline's mean. The floors do not move when the record changes:
+  - AF, reward correlation, reward AP and done AUC, on real frames and on the imagined rollout: the new three-seed mean stays at or above a fixed floor, 95% of the `train_tiny.py` baseline's mean. The floors do not move when the record changes. Reward recall and precision at the 0.05 cutoff are reported but not gated: AP scores the same head without picking a cutoff.
 
-| AF | reward_corr | reward_recall | reward_precision | reward_ap | done_auc | imagined_reward_corr | imagined_return_corr | imagined_done_auc |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0.875 | 0.884 | 0.931 | 0.837 | 0.892 | 0.931 | 0.566 | 0.753 | 0.789 |
+| AF | reward_corr | reward_ap | done_auc | imagined_reward_corr | imagined_return_corr | imagined_done_auc |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.875 | 0.884 | 0.892 | 0.931 | 0.566 | 0.753 | 0.789 |
 
 
 One run is noisy: seeds 0, 1 and 2 of the record score 13.5, 16.9 and 13.7. Compare three-seed means, never single runs.
@@ -57,6 +57,6 @@ Exploratory runs can use any GPU and any seed; timings from other GPUs are only 
 
 ## Open problems
 
-- **Frames against rewards.** The [`normuon`](https://github.com/Maharishiva/tinywmcraft/tree/normuon) branch lowers gFVD by 16% (12.3) with shortcut targets and scaled head gradients, but reward precision drops 8%, so it fails the gates. Keep the frame gain without losing the reward head. See [validation/colab_20261015.md](validation/colab_20261015.md).
+- **Frames against rewards.** The [`normuon`](https://github.com/Maharishiva/tinywmcraft/tree/normuon) branch lowers gFVD to 12.4 with shortcut targets and scaled head gradients, and its reward AP drops from 0.945 to 0.929: the trunk learns less from the reward. It is not ported to the interface above yet. Keep the frame gain without losing the reward head. See [validation/normuon_20261016.md](validation/normuon_20261016.md).
 - **Cheaper sampling.** The record spends 8 Euler steps per frame. Fewer steps, second-order solvers, distillation, or a model that is not flow matching at all could free eval time and let a bigger model train.
 - **Long horizons.** The benchmark scores 16 frames; in play the world drifts after a few dozen. Anything that keeps it coherent longer will show in the browser first.

@@ -45,9 +45,9 @@ It is also an open speedrun: lower the generation error (gFVD) in one 10-minute 
 
 ## Records
 
-| # | date | change | gFVD ↓ | AF ↑ | reward precision ↑ | max cold time | checkpoints |
+| # | date | change | gFVD ↓ | AF ↑ | reward AP ↑ | max cold time | checkpoints |
 |---|---|---|---:|---:|---:|---:|---|
-| 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 14.7 ± 1.9 | 0.929 | 0.897 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/tinywmcraft) |
+| 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 14.7 ± 1.9 | 0.929 | 0.945 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/tinywmcraft) |
 
 gFVD is shown times 10^4. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`.
 The baseline, row 0 of the leaderboard, is [train_tiny.py](train_tiny.py): 17.0 ± 0.5 ([numbers](validation/train_tiny_20261016.md)).
@@ -86,7 +86,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # fro
 - **Compute:** at most 600 s per training run on one A100 40GB, everything included, with no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical and its timed part (`eval_s`: importing and loading your model, compiling, generating) takes at most 180 s on the same GPU. Any model and any sampler, as long as it generates one frame per action without seeing future actions.
 - **Seeds:** report training seeds 0, 1 and 2.
-- **Gates:** the mean gFVD beats the record by a noise-aware margin; AF and every reward and termination metric stay above fixed floors, 95% of the `train_tiny.py` baseline. Records are ranked on gFVD alone.
+- **Gates:** the mean gFVD beats the record by a noise-aware margin; AF, reward correlation, reward AP and done AUC stay above fixed floors, 95% of the `train_tiny.py` baseline. Records are ranked on gFVD alone.
 
 Details, the model interface and how to submit: [program.md](program.md).
 
@@ -106,7 +106,7 @@ The frozen evaluator samples 2048 windows from held-out episodes with fixed seed
 
 - **gFVD ↓:** Fréchet distance between real and generated 4-frame clips in a fixed random CNN's feature space, times 10^4. It needs no external checkpoint and is not comparable to I3D FVD. A random CNN is not a perceptual metric; what the number tracks is visible below, where the four episodes drift at different rates.
 - **AF ↑:** action following, the share of windows where the true actions predict the salient pixels better than random actions under the same context and keys. An action-blind model scores 0.5.
-- **Heads:** reward correlation, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.
+- **Heads:** reward correlation, reward AP, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="Real frames beside imagined frames" width="760">
