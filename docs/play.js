@@ -12,7 +12,7 @@ const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const MOVES = 1000, MAX_SCALE = 7;            // moves in a run, then it ends; largest pixel scale
 const L = 31 * 512, RGB = 63 * 63 * 3;        // one 31-frame latent window, one frame
-const TOP = 7, H = TOP + 88, MAP = 49;        // canvas: the score strip, the frame, the keys; the map part of the frame
+const TOP = 7, H = TOP + 88, MAP = 49;        // the score strip, the frame, the keys (drawn in clips); the map part of the frame
 const BG = '#0a0a0a', FG = '#f0f0ee', ORANGE = '#ff6a13', KEY = '#1c1c1e', EDGE = '#3a3a3e', CAP = '#aaaaa8';
 // index = action; e.code, so the keys work on any keyboard layout
 const CODES = ['KeyQ', 'KeyA', 'KeyD', 'KeyW', 'KeyS', 'Space', 'Tab', 'KeyR', 'KeyT', 'KeyF', 'KeyP',
@@ -23,11 +23,17 @@ const NAMES = ['noop', 'left', 'right', 'up', 'down', 'do', 'sleep', 'place ston
   'place plant', 'make wood pickaxe', 'make stone pickaxe', 'make iron pickaxe', 'make wood sword',
   'make stone sword', 'make iron sword'];
 const TOUCH = matchMedia('(pointer: coarse)').matches;
-// the keyboard of play.gif under the frame: action, x, y, width of each key (-1 shows any other key pressed), and the reward
-// square's x; WASD on the right under the thumb on touch screens; SPACE exactly as wide as the two boxes above it
-const [BOARD, RX] = TOUCH
-  ? [[[3, 41, 0, 9], [1, 31, 10, 9], [4, 41, 10, 9], [2, 51, 10, 9], [5, 2, 10, 28], [-1, 2, 0, 18]], 21]
-  : [[[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], 52];
+// the keyboard of play.gif under the frame in clips: action, x, y, width of each key (-1 shows any other key pressed), and
+// the reward square's x; SPACE exactly as wide as the two boxes above it
+const BOARD = [[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], RX = 52;
+// the same keys as buttons, each at row, column, columns spanned: beside the frame in its geometry (columns of 9, 9, 9, 18
+// and 9 game pixels), under it on the crafting keys' six columns, WASD on the right under the thumb on touch screens
+const GRID = {
+  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 2], other: [1, 4, 1], gauge: [1, 5, 1] },
+  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 3], other: [1, 4, 2], gauge: [1, 6, 1] },
+  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], SPACE: [2, 1, 3], other: [1, 1, 2], gauge: [1, 3, 1] },
+};
+const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'SPACE']];
 const READY = TOUCH ? 'ready: tap the keys or the map' : 'ready: W A S D to move, SPACE to hit';
 const TIPS = TOUCH  // the first-visit tutorial: the movement keys until the first move, then crafting until the first craft
   ? ['tap these keys to move and hit,<br>or tap the map: around you to walk, on you to hit', 'tap to place and craft']
@@ -48,16 +54,21 @@ const FILES = !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: '
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const root = document.getElementById('play');
-const pix = (s, color = CAP) => `<img class="px" src="${label(s, color)}" style="height:calc(var(--fp) * ${6 * s.split('\n').length - 1})" alt="">`;
-root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${H}"></canvas><div class="msg"></div>
-<div class="ring"></div><div class="tip">${TIPS[0]}</div></div><div class="st"></div></div>
-<div class="side"><div class="acts">${ICONS.map(a => `<button data-a="${a}" title="${NAMES[a]}">` +
-  `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">${pix(CAPS[a]).replace('class="px"', 'class="px k"')}</button>`).join('')}
-<div class="tip">${TIPS[1]}</div></div><div class="btns"><button data-a="save" title="save the clip">${pix('SAVE CLIP')}</button>
-<button data-a="share" title="share the clip">${pix('SHARE', ORANGE)}</button><button data-a="reset" title="new world">${pix('NEW WORLD')}</button>
-</div></div>`;
+// a pixel-font label; u: screen pixels per font pixel (a game pixel on the movement keys, half of one elsewhere)
+const pix = (s, color = CAP, cls = 'px', u = '--fp') => `<img class="${cls}" src="${label(s, color)}" style="height:calc(var(${u}) * 5)" alt="">`;
+root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div></div>
+<div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${NAMES[a]}">${pix(k, CAP, 'px', '--px')}</button>`).join('')}
+<div class="key" data-k="other"></div><div class="key" data-k="gauge"><i></i></div><div class="tip">${TIPS[0]}</div></div>
+<div class="st"></div></div>
+<div class="side"><div class="acts">${ICONS.map(a => `<button class="key" data-a="${a}" title="${NAMES[a]}">` +
+  `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">${pix(CAPS[a], CAP, 'px k')}</button>`).join('')}
+<div class="tip">${TIPS[1]}</div></div><div class="btns"><button class="key" data-a="save" title="save the clip">${pix('SAVE CLIP')}</button>
+<button class="key" data-a="share" title="share the clip">${pix('SHARE', ORANGE)}</button>
+<button class="key" data-a="reset" title="new world">${pix('NEW WORLD')}</button></div></div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
-const acts = root.querySelector('.acts'), btns = root.querySelector('.btns'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+const keys = root.querySelector('.keys'), acts = root.querySelector('.acts'), btns = root.querySelector('.btns');
+const other = keys.querySelector('[data-k=other]'), gauge = keys.querySelector('[data-k=gauge] i');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
 let session, gpu, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
 let best = +localStorage.getItem('tinywmcraft.best') || 0, tut = +localStorage.getItem('tinywmcraft.tut') || 0;
@@ -67,18 +78,27 @@ const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' :
 const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on phones the space goes to the controls
 
 function fit() {  // the largest integer scale that fits. Beside the game the action keys span the map, and the three buttons,
-  // stacked, end with the keys under the frame; under the game both are as wide as it
+  // stacked, end with the movement keys under the frame; under the game everything sits on one grid of six columns
   const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
   const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
   const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;   // one game pixel between keys, as under the frame
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
+  const grid = GRID[row ? 'row' : TOUCH ? 'right' : 'left'];
+  Object.assign(keys.style, row
+    ? { gridTemplateColumns: [9, 9, 9, 18, 9].map(w => w * s + 'px').join(' '), gridAutoRows: 9 * s + 'px', margin: `${3 * s}px 0 0 ${3 * s}px` }
+    : { gridTemplateColumns: `repeat(6, ${b}px)`, gridAutoRows: b + 'px', margin: `${s}px 0 0` });
+  keys.style.gap = s + 'px';
+  for (const el of keys.querySelectorAll('.key')) {
+    const [r, c, n] = grid[el.dataset.k];
+    el.style.gridArea = `${r} / ${c} / span 1 / span ${n}`;
+  }
   Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
     marginTop: row ? TOP * s + 'px' : '' });
   Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
     gridAutoRows: (row ? 11 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 11 + 2 gaps = map to SPACE's bottom
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
   root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
-  msg.style.padding = `${TOP * s}px 16px ${25 * s}px`;   // what shows over the game sits on the frame
+  msg.style.padding = `${TOP * s}px 16px 0`;   // what shows over the game sits on the frame
 }
 
 function hint() {  // the tutorial step on show, and the dimmed controls while the model loads
@@ -121,7 +141,7 @@ function head(c, f) {  // the score and the best score
   c.fillRect(0, TOP - 1, Math.round(63 * f.moves / MOVES), 1);
 }
 
-function board(c, a, r) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
+function keyboard(c, a, r) {  // the keys under the frame in clips, the pressed one in orange; a square filled by the reward
   const y0 = TOP + 66;
   c.fillStyle = BG;
   c.fillRect(0, TOP + 63, 63, 25);
@@ -155,19 +175,24 @@ function over(c, f) {  // the end of a run: Minecraft's red death screen, or a d
   shadowed(n, shadowed('SCORE ', x, TOP + 24, FG), TOP + 24, ORANGE);
 }
 
-function paint(c, f) {  // one move: the score, the frame with a +1 for a predicted reward over 0.5, the keys, the end screen
+function paint(c, f, board = false) {  // one move: the score, the frame with a +1 for a reward over 0.5, the end screen, the keys
   const img = c.createImageData(63, 63);
   for (let i = 0; i < 63 * 63; i++) img.data.set([f.rgb[3 * i], f.rgb[3 * i + 1], f.rgb[3 * i + 2], 255], 4 * i);
   c.putImageData(img, 0, TOP);
   if (f.r > 0.5) text('+1', 55, TOP + 1, FG, c);
   head(c, f);
-  board(c, f.a, f.r);
+  if (board) keyboard(c, f.a, f.r);
   if (f.end) over(c, f);
 }
 
 function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the frame, key and reward, not the pixels drawn
-  const f = { rgb, a, r, score, best, moves, end };
+  const f = { rgb, a, r, score, best, moves, end }, move = MOVE.some(m => m[0] === a);
   paint(ctx, f);
+  for (const el of root.querySelectorAll('.key[data-a]')) el.classList.toggle('on', +el.dataset.a === a);   // the key pressed
+  other.classList.toggle('on', a !== undefined && !move);   // any other key pressed, by name, as in play.gif
+  other.innerHTML = a !== undefined && !move ? pix(CAPS[a], BG, 'px', '--px') : '';
+  gauge.style.height = `${100 * Math.round(7 * Math.min(Math.max(r, 0), 1)) / 7}%`;   // the reward, in steps of a game pixel
+  gauge.classList.toggle('hot', r > 0.5);
   tick++;
   frames.push(f);
 }
@@ -306,7 +331,7 @@ async function encode() {  // the run as an MP4 under the link: 8x nearest-neigh
   output.addVideoTrack(source, { frameRate: fps });
   await output.start();
   for (const [i, f] of fs.entries()) {
-    paint(oc, f);
+    paint(oc, f, true);
     c.drawImage(one, 0, LINE * G, out.width, H * G);
     await source.add(i / fps, i === fs.length - 1 ? 1.5 : 1 / fps);
     if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / fs.length)}%`);
@@ -366,7 +391,6 @@ function press(a) {  // an action index, 'reset', 'save' or 'share'
   if (!session) return;
   if (a === 'reset') return reset();
   if (busy || end) return;
-  for (const b of acts.children) b.classList.toggle('on', +b.dataset.a === a);
   step(a).catch(fail);
 }
 
@@ -422,12 +446,9 @@ root.onclick = e => {
   if (b) return press(/^\d+$/.test(b.dataset.a) ? +b.dataset.a : b.dataset.a);
   if (e.target !== canvas) return;
   const s = canvas.clientWidth / 63, x = e.offsetX / s, y = e.offsetY / s - TOP;
-  if (y >= 0 && y < MAP) {   // on the map: the player's tile is DO, elsewhere a step towards the click
-    const dx = x - 31.5, dy = y - 24.5;
-    return press(Math.max(Math.abs(dx), Math.abs(dy)) < 3.5 ? 5 : Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 1 : 2) : (dy < 0 ? 3 : 4));
-  }
-  const k = BOARD.find(([a, kx, ky, w]) => a >= 0 && x >= kx && x < kx + w && y - 66 >= ky && y - 66 < ky + 9);   // a drawn key
-  if (k) press(k[0]);
+  if (y < 0 || y >= MAP) return;
+  const dx = x - 31.5, dy = y - 24.5;   // on the map: the player's tile is DO, elsewhere a step towards the click
+  press(Math.max(Math.abs(dx), Math.abs(dy)) < 3.5 ? 5 : Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 1 : 2) : (dy < 0 ? 3 : 4));
 };
 addEventListener('keydown', e => {
   const a = e.code in ARROWS ? ARROWS[e.code] : CODES.indexOf(e.code);
