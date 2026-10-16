@@ -1,6 +1,9 @@
 // Play inside the tinywmcraft world model of Craftax-Classic, in the browser on WebGPU. Mounts into #play.
 // Icons are Craftax's own sprites (github.com/MichaelTMatthews/Craftax, MIT, (c) 2024 Michael Matthews).
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs';
+// onnxruntime-web, its JSPI build where WebAssembly has JSPI (Chrome 137+, Safari 27+): WebKit needs 0.5 GB to compile its
+// 17 MB of wasm, 1.1 GB for the 27 MB asyncify one, close to all iOS allows a page
+const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
+const ort = await import(ORT + ('Suspending' in WebAssembly ? 'ort.jspi.min.mjs' : 'ort.webgpu.min.mjs'));
 
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
@@ -233,11 +236,12 @@ function feeds() {  // the past fed corrupted to its signal levels tau, fresh no
   return { past: z.map((v, i) => tau[i >> 9] * v + (1 - tau[i >> 9]) * eps[i]), tau, act, noise: gauss(512), rnoise: gauss(512) };
 }
 
-// Without JSPI (Safari, every browser on iOS) the graph is captured: onnxruntime records its ~4500 dispatches on the first
-// run and replays them, so a step creates no WebGPU objects. Uncaptured, every step makes ~4500 bind groups that only
-// garbage collection frees, and Safari piles them up in the GPU process until iOS kills it. Chrome frees them in time and
-// runs uncaptured, about 30% faster there. Capture needs fixed GPU buffers for the inputs and outputs, used in both cases.
-const CAPTURE = !('Suspending' in WebAssembly);
+// On WebKit (Safari, every browser on iOS) the graph is captured: onnxruntime records its ~4500 dispatches on the first
+// run and replays them, so a step makes no bind groups. Uncaptured, every step makes ~4500 that only garbage collection
+// frees, and WebKit piles them up in the GPU process (134,000 after 30 moves) until iOS kills it. Chrome frees them in time
+// and runs uncaptured, faster there. JSPI does not tell Safari apart: Safari 27 has it. Capture needs fixed GPU buffers for
+// the inputs and outputs, used in both cases.
+const CAPTURE = /Apple/.test(navigator.vendor);
 const IN = { past: ['float32', 1, 31, 4, 4, 32], tau: ['float32', 1, 31], act: ['int32', 1, 32], noise: ['float32', 1, 4, 4, 32],
   rnoise: ['float32', 1, 4, 4, 32] };
 const OUT = { z: ['float32', 1, 4, 4, 32], rgb: ['uint8', 63, 63, 3], reward: ['float32', 1], done: ['float32', 1] };
