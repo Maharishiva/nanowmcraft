@@ -2,7 +2,8 @@
 // Icons are Craftax's own sprites (github.com/MichaelTMatthews/Craftax, MIT, (c) 2024 Michael Matthews).
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs';
 
-const GIFENC = 'https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js';
+const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
+const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const q = new URLSearchParams(location.search);
 const MODEL = q.get('model') ?? 'https://huggingface.co/maharishiva/tinywmcraft/resolve/main/web/play.onnx';
 const STARTS = q.get('starts') ?? 'starts.bin';
@@ -26,6 +27,9 @@ const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   F: '111100110100100', P: '110101110100100', Q: '010101101110011', R: '110101110101101', S: '011100010001110',
   T: '111010010010010', W: '101101111111101', 1: '010110010010111', 2: '111001111100111', 3: '111001111001111',
   4: '101101111001001', 5: '111100111001111', 6: '111100111101111', '+': '000010111010000',
+  G: '011100101101011', H: '101101111101101', I: '111010010010111', M: '101111111101101', N: '110101101101101',
+  O: '010101101101010', U: '101101101101111', V: '101101101101010', Y: '101101010010010', '.': '000000000000010',
+  '/': '001001010100100',
 };
 
 const root = document.getElementById('play');
@@ -36,7 +40,7 @@ root.innerHTML = `<div class="screen"><canvas width="63" height="${H}"></canvas>
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const acts = root.querySelector('.acts'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, starts, z, tau, act, frames = [], score = 0, busy = false, dead = false;
+let session, starts, z, tau, act, mux, frames = [], score = 0, busy = false, dead = false;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 
@@ -46,12 +50,13 @@ function fit() {  // largest integer scale that fits next to (or above) the icon
   canvas.parentNode.style.width = canvas.style.width = 63 * Math.max(1, s) + 'px';
 }
 
-function text(s, x, y, color) {
-  ctx.fillStyle = color;
+function text(s, x, y, color, c = ctx, u = 1) {  // the 3x5 pixel font, u screen pixels per font pixel; returns the end x
+  c.fillStyle = color;
   for (const ch of s) {
-    for (let i = 0; i < 15; i++) if (FONT[ch][i] === '1') ctx.fillRect(x + i % 3, y + (i / 3 | 0), 1, 1);
-    x += 4;
+    for (let i = 0; i < 15; i++) if (FONT[ch][i] === '1') c.fillRect(x + u * (i % 3), y + u * (i / 3 | 0), u, u);
+    x += 4 * u;
   }
+  return x;
 }
 
 function board(a, r = 0) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
@@ -137,25 +142,37 @@ async function step(a) {
   busy = false;
 }
 
-async function save() {  // the last CLIP frames since the reset as a GIF: 4x nearest-neighbour, about 6 fps
-  const { GIFEncoder, quantize, applyPalette } = await import(GIFENC);
-  const G = 4, W = 63 * G, N = W * H * G, gif = GIFEncoder(), big = new Uint8Array(N);
-  frames.forEach((f, i) => {
-    const palette = quantize(f.data, 256), idx = applyPalette(f.data, palette);
-    for (let p = 0; p < N; p++) big[p] = idx[(p / W / G | 0) * 63 + ((p % W) / G | 0)];
-    gif.writeFrame(big, W, H * G, { palette, delay: i === frames.length - 1 ? 2000 : 167 });
-  });
-  gif.finish();
+async function save() {  // the last CLIP frames as an MP4 under the link: 8x nearest-neighbour, 6 fps, last frame 2 s
+  status('saving the clip');
+  const { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } = await (mux ??= import(MEDIABUNNY));
+  const G = 8, TOP = 5, U = 3, out = document.createElement('canvas'), one = document.createElement('canvas');
+  [out.width, out.height, one.width, one.height] = [63 * G, (TOP + H) * G, 63, H];
+  const c = out.getContext('2d'), y = (TOP * G - 5 * U) >> 1, x = (out.width - U * (4 * LINK.join('').length - 1)) >> 1;
+  c.imageSmoothingEnabled = false;
+  c.fillStyle = BG;
+  c.fillRect(0, 0, out.width, TOP * G);
+  text(LINK[1], text(LINK[0], x, y, CAP, c, U), y, ORANGE, c, U);
+  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+  const source = new CanvasSource(out, { codec: 'avc', bitrate: QUALITY_HIGH });
+  output.addVideoTrack(source, { frameRate: 6 });
+  await output.start();
+  for (const [i, f] of frames.entries()) {
+    one.getContext('2d').putImageData(f, 0, 0);
+    c.drawImage(one, 0, TOP * G, out.width, H * G);
+    await source.add(i / 6, i === frames.length - 1 ? 2 : 1 / 6);
+  }
+  await output.finalize();
   const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([gif.bytes()], { type: 'image/gif' }));
-  link.download = 'tinywmcraft.gif';
+  link.href = URL.createObjectURL(new Blob([output.target.buffer], { type: 'video/mp4' }));
+  link.download = 'tinywmcraft.mp4';
   link.click();
+  status(`saved ${frames.length} frames as tinywmcraft.mp4`);
 }
 
 const fail = e => { msg.textContent = String(e.message ?? e); status('error'); };
 
 function press(a) {  // an action index, 'reset' or 'save'
-  if (a === 'save') return frames.length && save();
+  if (a === 'save') return frames.length && save().catch(fail);
   if (!session) return;
   if (a === 'reset') return reset();
   if (!busy && !dead) step(a).catch(fail);
@@ -187,6 +204,7 @@ async function main() {
   await s.run(feeds());   // warm-up: compiles the shaders before the first keypress
   session = s;
   status('ready: W A S D to move, SPACE to hit', true);
+  mux = import(MEDIABUNNY);   // the MP4 encoder, loaded in the background so saving a clip is quick
 }
 
 root.onmousedown = e => e.preventDefault();   // buttons never take focus, so space stays DO
