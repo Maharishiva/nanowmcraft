@@ -7,7 +7,7 @@ const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every sav
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 const q = new URLSearchParams(location.search);
 const MODEL = q.get('model') ??   // a pinned revision, so the copy kept in the browser's cache stays valid
-  'https://huggingface.co/maharishiva/tinywmcraft/resolve/adca1c35e6f2c677088167df6b68c2df23306fe2/web/play.onnx';
+  'https://huggingface.co/maharishiva/tinywmcraft/resolve/9506e7a22705ae7f45e8edaee7336d036dd8ed31/web/play.onnx';
 const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const CLIP = 300, MAX_SCALE = 7;              // frames kept for the clip, largest pixel scale
@@ -37,6 +37,7 @@ const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
 };
 // the clip can go to the system share sheet only where the browser shares files
 const FILES = !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] });
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const root = document.getElementById('play');
 root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${H}"></canvas><div class="msg"></div></div>
@@ -47,7 +48,7 @@ root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" heigh
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const acts = root.querySelector('.acts'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, episode = 0;
+let session, gpu, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, episode = 0;
 let best = +localStorage.getItem('tinywmcraft.best') || 0, busy = false, dead = false, saving = false;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
@@ -161,12 +162,55 @@ function reset() {  // a random real start: 31 clean latents with their incoming
 }
 
 function feeds() {  // the past fed corrupted to its signal levels tau, fresh noise every call
-  const eps = gauss(L), t = (d, x, dims) => new ort.Tensor(d, x, dims);
-  return {
-    past: t('float32', z.map((v, i) => tau[i >> 9] * v + (1 - tau[i >> 9]) * eps[i]), [1, 31, 4, 4, 32]),
-    tau: t('float32', tau, [1, 31]), act: t('int32', act, [1, 32]),
-    noise: t('float32', gauss(512), [1, 4, 4, 32]), rnoise: t('float32', gauss(512), [1, 4, 4, 32]),
+  const eps = gauss(L);
+  return { past: z.map((v, i) => tau[i >> 9] * v + (1 - tau[i >> 9]) * eps[i]), tau, act, noise: gauss(512), rnoise: gauss(512) };
+}
+
+// Without JSPI (Safari, every browser on iOS) the graph is captured: onnxruntime records its ~4500 dispatches on the first
+// run and replays them, so a step creates no WebGPU objects. Uncaptured, every step makes ~4500 bind groups that only
+// garbage collection frees, and Safari piles them up in the GPU process until iOS kills it. Chrome frees them in time and
+// runs uncaptured, about 30% faster there. Capture needs fixed GPU buffers for the inputs and outputs, used in both cases.
+const CAPTURE = !('Suspending' in WebAssembly);
+const IN = { past: ['float32', 1, 31, 4, 4, 32], tau: ['float32', 1, 31], act: ['int32', 1, 32], noise: ['float32', 1, 4, 4, 32],
+  rnoise: ['float32', 1, 4, 4, 32] };
+const OUT = { z: ['float32', 1, 4, 4, 32], rgb: ['uint8', 63, 63, 3], reward: ['float32', 1], done: ['float32', 1] };
+
+function bind(device) {  // the graph's input and output buffers, and one mappable buffer the outputs are copied into
+  const make = ([type, ...dims]) => ort.Tensor.fromGpuBuffer(device.createBuffer({
+    size: (dims.reduce((x, y) => x * y) * (type === 'uint8' ? 1 : 4) + 15) & ~15,   // kernels read vec4s
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST }), { dataType: type, dims });
+  const all = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, make(v)])), fetches = all(OUT), at = [];
+  let size = 0;
+  for (const t of Object.values(fetches)) at.push(size), size += t.gpuBuffer.size;
+  return { device, feeds: all(IN), fetches, at, read: device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }) };
+}
+
+function pin(io) {  // onnxruntime-web 1.30 drops a bound buffer's handle after every run, so a replay of the captured graph
+  // would use dead ones; while the first run holds them, mark them permanent as it marks its own buffers (count NaN)
+  const { device } = io, f = device.createBindGroup, bufs = [...Object.values(io.feeds), ...Object.values(io.fetches)];
+  device.createBindGroup = function (d) {
+    for (const { gpuBuffer: b } of bufs) for (const k of Object.getOwnPropertySymbols(b)) if (k.description === 'gpuBufferMetadata') b[k][1] = NaN;
+    return f.call(this, d);
   };
+  return () => { delete device.createBindGroup; io.pinned = true; };
+}
+
+async function run(s, x) {  // one call of the world model: x's arrays in, the outputs out
+  const { device, feeds, fetches, at, read } = gpu, unpin = !gpu.pinned && pin(gpu);
+  for (const k in feeds) device.queue.writeBuffer(feeds[k].gpuBuffer, 0, x[k]);
+  try {
+    await s.run(feeds, fetches);
+  } finally {
+    if (unpin) unpin();
+  }
+  const enc = device.createCommandEncoder();
+  Object.values(fetches).forEach((t, i) => enc.copyBufferToBuffer(t.gpuBuffer, 0, read, at[i], t.gpuBuffer.size));
+  device.queue.submit([enc.finish()]);
+  await read.mapAsync(GPUMapMode.READ);
+  const b = read.getMappedRange().slice(0);
+  read.unmap();
+  return { z: new Float32Array(b, at[0], 512), rgb: new Uint8Array(b, at[1], RGB), reward: new Float32Array(b, at[2], 1)[0],
+    done: new Float32Array(b, at[3], 1)[0] };
 }
 
 async function step(a) {  // results of a step started before a reset are dropped
@@ -174,18 +218,18 @@ async function step(a) {  // results of a step started before a reset are droppe
   const ep = episode;
   act[31] = a;
   try {
-    const t0 = performance.now(), o = await session.run(feeds());
+    const t0 = performance.now(), o = await run(session, feeds());
     if (ep !== episode) return;
     z.copyWithin(0, 512);
-    z.set(o.z.data, 30 * 512);
+    z.set(o.z, 30 * 512);
     tau.copyWithin(0, 1);
     tau[30] = 0.9;
     act.copyWithin(0, 1);
-    dead = o.done.data[0] > DONE_THRESHOLD;
-    const r = o.reward.data[0];
+    dead = o.done > DONE_THRESHOLD;
+    const r = o.reward;
     score += r > 0.5;
     if (score > best) localStorage.setItem('tinywmcraft.best', best = score);
-    draw(o.rgb.data, a, r);
+    draw(o.rgb, a, r);
     status(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
     if (!dead) return;
     wasted();
@@ -224,7 +268,8 @@ async function encode() {  // the last CLIP frames as an MP4 under the link: 8x 
 
 const clip = () => (made?.[0] === tick ? made : (made = [tick, encode()]))[1];   // encoded once per frame shown
 
-async function save() {
+async function save() {  // a download; on iPhones and iPads the share sheet instead, whose "Save Video" puts the clip in Photos
+  if (IOS && FILES) return send();
   status('saving the clip');
   const f = await clip(), link = document.createElement('a');
   link.href = URL.createObjectURL(f);
@@ -233,21 +278,26 @@ async function save() {
   status('clip saved');
 }
 
-async function share() {  // the clip to the system share sheet; without file sharing, a post on X and the clip saved to attach
+async function share() {  // the clip to the share sheet, its caption to the clipboard; without file sharing, a post on X
   const text = `I scored ${score} inside a world model trained in 10 minutes for $0.1 of compute. ` +
-    'Every frame is generated by a neural network on my GPU. Can you beat it?';
+    `Every frame is generated by a neural network on my GPU. Can you beat it? ${SITE}`;
   if (!FILES) {
-    open(`https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(SITE)}`, '_blank');
+    open(`https://x.com/intent/post?text=${encodeURIComponent(text)}`, '_blank');
     await save();
     return status('clip saved: attach it to the post', true);
   }
+  navigator.clipboard?.writeText(text).catch(() => {});
+  return send('caption copied: paste it with the clip');
+}
+
+async function send(done = '') {  // the clip alone: given text as well, apps on iOS (Telegram) share only the text
   status('preparing the clip');
   const files = [await clip()];
   try {
-    await navigator.share({ files, text: `${text} ${SITE}` });
-    status('');
+    await navigator.share({ files });
+    status(done, !!done);
   } catch (e) {
-    if (e.name === 'NotAllowedError') status('the clip is ready: press share again', true);   // the click expired while encoding
+    if (e.name === 'NotAllowedError') status('the clip is ready: press again', true);   // the click expired while encoding
     else if (e.name === 'AbortError') status('');
     else throw e;
   }
@@ -303,8 +353,10 @@ async function main() {
   reset();
   const model = await load(MODEL, 'world model', true);
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
-  const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'], logSeverityLevel: 3 });
-  await s.run(feeds());   // warm-up: compiles the shaders before the first keypress
+  const s = await ort.InferenceSession.create(model, { executionProviders: [{ name: 'webgpu' }], enableGraphCapture: CAPTURE,
+    logSeverityLevel: 3 });
+  gpu = bind(ort.env.webgpu.device);
+  await run(s, feeds());   // warm-up: compiles the shaders and captures the graph before the first keypress
   session = s;
   msg.textContent = '';
   status('ready: W A S D to move, SPACE to hit', true);
