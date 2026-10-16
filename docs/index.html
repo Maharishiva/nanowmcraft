@@ -171,7 +171,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <h2 id="speedrun">the speedrun</h2>
 <p>Beat the record gFVD in one 600-second A100 run.</p>
 <dl class="rules">
-<dt>data</dt><dd><code>train.npz</code>, 500k transitions. Nothing else.</dd>
+<dt>data</dt><dd><a href="https://huggingface.co/datasets/maharishiva/tinywmcraft_500k"><code>train.npz</code></a> on Hugging Face, 500k transitions. Nothing else.</dd>
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
 <dt>eval</dt><dd><code>eval.py</code> is frozen and must finish in 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>

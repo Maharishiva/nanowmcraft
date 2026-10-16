@@ -81,7 +81,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # fro
 
 ## Rules
 
-- **Data:** train only on `data/train.npz`, at most 500k transitions.
+- **Data:** train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft_500k), at most 500k transitions.
 - **Compute:** at most 600 s per training run on one A100 40GB, everything included, with no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical and its whole run takes at most 180 s on the same GPU. Any model and any sampler, as long as it generates one frame per action without seeing future actions.
 - **Seeds:** report training seeds 0, 1 and 2.
