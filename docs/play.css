@@ -16,6 +16,7 @@
 #play .prog.wait i { animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: .35; } }
 #play .st { margin-top: 8px; min-height: 1.4em; color: #6a6a6a; font-size: 11px; }
+#play .st:empty { display: none; }
 #play .st.hot { color: #ff6a13; }
 
 /* the action keys and the clip buttons: drawn like the keys under the frame, one game pixel of border */
@@ -38,7 +39,7 @@
 @media (hover: hover) { #play button:hover { border-color: #ff6a13; } }
 @media (hover: none) { #play img.k { display: none; } }
 
-/* the first-visit tutorial: a tag pointing at the movement keys, then at the crafting keys, which blink */
+/* the first-visit tutorial: a tag pointing at the movement keys, then at the crafting keys; each flashes three times */
 #play .tip, #play .ring { display: none; position: absolute; z-index: 2; pointer-events: none; }
 #play .tip { box-sizing: border-box; padding: 6px 10px; background: #ff6a13; color: #0a0a0a; text-align: center; }
 #play .tip::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
@@ -46,11 +47,14 @@
 #play .view .tip { left: 6%; right: 6%; bottom: calc(27 * var(--px, 5px)); }
 #play .acts .tip { left: 0; right: 0; bottom: calc(100% + 9px); }
 #play .ring { left: 0; right: 0; bottom: 0; height: calc(25 * var(--px, 5px)); box-sizing: border-box;
-  border: 2px solid #ff6a13; animation: blink 1s steps(2) infinite; }
+  border: 2px solid #ff6a13; animation: flash 1s steps(2) 3 forwards; }
+@keyframes flash { 50%, 100% { opacity: 0; } }
 #play[data-tut="0"] .view .tip, #play[data-tut="0"] .ring, #play[data-tut="1"] .acts .tip { display: block; }
-#play[data-tut="1"] .acts button { animation: hl 1s steps(2) infinite; }
-@keyframes hl { 50% { border-color: #ff6a13; } }
+#play[data-tut="1"] .acts button { animation: hl 1s steps(2) 3; }   /* three flashes, then only the tag */
+@keyframes hl { 0% { border-color: #ff6a13; } 50%, 100% { border-color: #3a3a3e; } }
 
 @media (max-width: 700px) {
   #play { flex-direction: column; align-items: center; }
+  #play .acts .tip { bottom: auto; top: calc(100% + 9px); }   /* under the crafting keys, clear of the keys above */
+  #play .acts .tip::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #ff6a13; }
 }

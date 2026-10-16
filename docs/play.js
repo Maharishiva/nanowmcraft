@@ -41,7 +41,7 @@ const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   G: '011100101101011', H: '101101111101101', I: '111010010010111', M: '101111111101101', N: '110101101101101',
   O: '010101101101010', U: '101101101101111', V: '101101101101010', Y: '101101010010010', '.': '000000000000010',
   '/': '001001010100100', 0: '111101101101111', 7: '111001001001001', 8: '111101111101111', 9: '111101111001111',
-  ' ': '000000000000000', '!': '010010010000010', L: '100100100100111',
+  ' ': '000000000000000', '!': '010010010000010', L: '100100100100111', '?': '111001010000010',
 };
 // the clip can go to the system share sheet only where the browser shares files
 const FILES = !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] });
@@ -53,8 +53,8 @@ root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" heigh
 <div class="ring"></div><div class="tip">${TIPS[0]}</div></div><div class="st"></div></div>
 <div class="side"><div class="acts">${ICONS.map(a => `<button data-a="${a}" title="${NAMES[a]}">` +
   `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">${pix(CAPS[a]).replace('class="px"', 'class="px k"')}</button>`).join('')}
-<div class="tip">${TIPS[1]}</div></div><div class="btns"><button data-a="save" title="save the clip">${pix('SAVE\nCLIP')}</button>
-<button data-a="share" title="share the clip">${pix('SHARE', ORANGE)}</button><button data-a="reset" title="new world">${pix('NEW\nWORLD')}</button>
+<div class="tip">${TIPS[1]}</div></div><div class="btns"><button data-a="save" title="save the clip">${pix('SAVE CLIP')}</button>
+<button data-a="share" title="share the clip">${pix('SHARE', ORANGE)}</button><button data-a="reset" title="new world">${pix('NEW WORLD')}</button>
 </div></div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const acts = root.querySelector('.acts'), btns = root.querySelector('.btns'), ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -64,17 +64,18 @@ let best = +localStorage.getItem('tinywmcraft.best') || 0, tut = +localStorage.g
 let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' or 'time' once the run is over
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
+const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on phones the space goes to the controls
 
-function fit() {  // the largest integer scale that fits. Beside the game the action keys span the map and the three buttons
-  // the inventory under it, so the column is exactly as tall as the frame; under the game both are as wide as it
+function fit() {  // the largest integer scale that fits. Beside the game the action keys span the map, and the three buttons,
+  // stacked, end with the keys under the frame; under the game both are as wide as it
   const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
   const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
   const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;   // one game pixel between keys, as under the frame
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
-  for (const el of [acts, btns]) Object.assign(el.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gap: s + 'px' });
-  Object.assign(acts.style, { gridAutoRows: b + 'px', marginTop: row ? TOP * s + 'px' : '' });
-  Object.assign(btns.style, { gridAutoRows: (row ? (63 - MAP - 1) * s : b) + 'px', marginTop: s + 'px' });
-  for (const el of btns.children) el.style.gridColumn = `span ${cols / 3}`;
+  Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
+    marginTop: row ? TOP * s + 'px' : '' });
+  Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
+    gridAutoRows: (row ? 11 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 11 + 2 gaps = map to SPACE's bottom
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
   root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
   msg.style.padding = `${TOP * s}px 16px ${25 * s}px`;   // what shows over the game sits on the frame
@@ -171,6 +172,17 @@ function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the f
   frames.push(f);
 }
 
+function card(c, f) {  // the last screen of every clip: the score to beat
+  c.fillStyle = BG;
+  c.fillRect(0, 0, 63, H);
+  const mid = (s, y, color, u = 1) => text(s, (63 - u * (4 * s.length - 1)) >> 1, y, color, c, u);
+  mid('MY SCORE', 14, CAP);
+  mid(String(f.score), 24, ORANGE, 4);
+  mid(`IN ${f.moves} MOVE${f.moves === 1 ? '' : 'S'}`, 50, CAP);
+  mid('CAN YOU', 66, FG);
+  mid('BEAT IT?', 73, FG);
+}
+
 const gauss = n => {  // standard normal, Box-Muller
   const x = new Float32Array(n);
   for (let i = 0; i < n; i += 2) {
@@ -193,7 +205,7 @@ function reset() {  // a random real start: 31 clean latents with their incoming
   end = '';
   msg.textContent = '';
   draw(starts.rgb.subarray(k * RGB, (k + 1) * RGB));
-  if (session) status(READY, true);
+  if (session) info(READY, true);
 }
 
 function feeds() {  // the past fed corrupted to its signal levels tau, fresh noise every call
@@ -265,7 +277,7 @@ async function step(a) {  // results of a step started before a reset are droppe
     score += r > 0.5;
     if (score > best) localStorage.setItem('tinywmcraft.best', best = score);
     draw(o.rgb, a, r);
-    status(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
+    info(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
     learnt(a);
     if (!end) return;
     msg.innerHTML = '<div class="end"><button data-a="save">save clip</button><button class="hot" data-a="share">share</button>' +
@@ -276,7 +288,7 @@ async function step(a) {  // results of a step started before a reset are droppe
   }
 }
 
-async function encode() {  // the run as an MP4 under the link: 8x nearest-neighbour, at most a minute, the last frame 2 s
+async function encode() {  // the run as an MP4 under the link: 8x nearest-neighbour, at most a minute, then the score card
   const fs = frames.slice(), d = new Date(), p2 = n => String(n).padStart(2, '0');   // play goes on while it encodes
   const name = `tinywmcraft-score-${score}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
     `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.mp4`;
@@ -296,9 +308,12 @@ async function encode() {  // the run as an MP4 under the link: 8x nearest-neigh
   for (const [i, f] of fs.entries()) {
     paint(oc, f);
     c.drawImage(one, 0, LINE * G, out.width, H * G);
-    await source.add(i / fps, i === fs.length - 1 ? 2 : 1 / fps);
+    await source.add(i / fps, i === fs.length - 1 ? 1.5 : 1 / fps);
     if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / fs.length)}%`);
   }
+  card(oc, fs.at(-1));
+  c.drawImage(one, 0, LINE * G, out.width, H * G);
+  await source.add((fs.length - 1) / fps + 1.5, 2.5);
   await output.finalize();
   return new File([output.target.buffer], name, { type: 'video/mp4' });
 }
@@ -397,7 +412,7 @@ async function main() {
   session = s;
   msg.textContent = '';
   hint();
-  status(READY, true);
+  info(READY, true);
   mux = import(MEDIABUNNY);   // the MP4 encoder, loaded in the background so saving a clip is quick
 }
 
