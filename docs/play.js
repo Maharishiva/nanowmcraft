@@ -40,7 +40,7 @@ root.innerHTML = `<div class="screen"><canvas width="63" height="${H}"></canvas>
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const acts = root.querySelector('.acts'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, starts, z, tau, act, mux, frames = [], score = 0, busy = false, dead = false;
+let session, starts, z, tau, act, mux, frames = [], score = 0, episode = 0, busy = false, dead = false;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 
@@ -101,6 +101,7 @@ const gauss = n => {  // standard normal, Box-Muller
 };
 
 function reset() {  // a random real start: 31 clean latents with their incoming actions, and the last real frame
+  episode++;
   const k = Math.floor(Math.random() * starts.n);
   z = starts.lat.slice(k * L, (k + 1) * L);
   tau = new Float32Array(31).fill(1);
@@ -123,23 +124,28 @@ function feeds() {  // the past fed corrupted to its signal levels tau, fresh no
   };
 }
 
-async function step(a) {
+async function step(a) {  // results of a step started before a reset are dropped
   busy = true;
+  const ep = episode;
   act[31] = a;
-  const t0 = performance.now(), o = await session.run(feeds());
-  z.copyWithin(0, 512);
-  z.set(o.z.data, 30 * 512);
-  tau.copyWithin(0, 1);
-  tau[30] = 0.9;
-  act.copyWithin(0, 1);
-  dead = o.done.data[0] > DONE_THRESHOLD;
-  const r = o.reward.data[0];
-  score += r > 0.5;
-  draw(o.rgb.data, a, r);
-  status(`score ${score}, ${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
-  if (dead) msg.innerHTML = `<b>dead, score ${score}</b><button class="hot" data-a="save">save clip</button>` +
-    '<button data-a="reset">new world</button>';
-  busy = false;
+  try {
+    const t0 = performance.now(), o = await session.run(feeds());
+    if (ep !== episode) return;
+    z.copyWithin(0, 512);
+    z.set(o.z.data, 30 * 512);
+    tau.copyWithin(0, 1);
+    tau[30] = 0.9;
+    act.copyWithin(0, 1);
+    dead = o.done.data[0] > DONE_THRESHOLD;
+    const r = o.reward.data[0];
+    score += r > 0.5;
+    draw(o.rgb.data, a, r);
+    status(`score ${score}, ${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
+    if (dead) msg.innerHTML = `<b>dead, score ${score}</b><button class="hot" data-a="save">save clip</button>` +
+      '<button data-a="reset">new world</button>';
+  } finally {
+    busy = false;
+  }
 }
 
 async function save() {  // the last CLIP frames as an MP4 under the link: 8x nearest-neighbour, 6 fps, last frame 2 s

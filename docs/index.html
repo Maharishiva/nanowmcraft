@@ -178,7 +178,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <dl class="rules">
 <dt>data</dt><dd><a href="https://huggingface.co/datasets/maharishiva/tinywmcraft_500k"><code>train.npz</code></a> on Hugging Face, 500k transitions. Nothing else.</dd>
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
-<dt>eval</dt><dd><code>eval.py</code> is frozen and must finish in 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
+<dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating must take at most 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
 <dt>gates</dt><dd>gFVD beats the record by a noise-aware margin. AF and every head metric stay within 2% of the record.</dd>
 </dl>

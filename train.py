@@ -319,6 +319,7 @@ def _compiled(model):
 def start(model, obs_u8, actions):
     """The interface eval.py and play_wm.py use. Real context frames (B, n0, H, W, 3) uint8 and the action into each
     (B, n0) -> a rollout state."""
+    obs_u8, actions = obs_u8[:, -model.win:], actions[:, -model.win:]   # the window holds the last win frames
     return _start_latents(encode(model, jnp.asarray(obs_u8)), jnp.asarray(actions, jnp.int32), model.win)
 
 def step(model, state, action, key):

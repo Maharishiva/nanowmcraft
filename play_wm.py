@@ -8,11 +8,13 @@ same real frames, then imagines forward and drifts from real over time.
     python play_wm.py --model runs/a/model.npz runs/b/model.npz --labels "a .0015" "b .0016"
     python play_wm.py --model ... --no-recon     # hide the tokenizer pane
     python play_wm.py --model ... --selftest     # headless smoke test -> play_selftest.png
+    python play_wm.py --module train_tiny --model runs/tiny/model.npz   # any module with the eval.py interface
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 from pathlib import Path
 
@@ -21,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from craftax.craftax_env import make_craftax_env_from_name
 
-import train
+M = None   # the model module (train.py by default), set from --module
 
 ENV_NAME = "Craftax-Classic-Pixels-v1"
 ACT = {"NOOP": 0, "LEFT": 1, "RIGHT": 2, "UP": 3, "DOWN": 4, "DO": 5, "SLEEP": 6,
@@ -44,27 +46,27 @@ def make_env():
 
 
 def recon_of(model, obs_u8):
-    return np.asarray(train.decode(model, train.encode(model, jnp.asarray(obs_u8)[None])))[0]
+    return np.asarray(M.decode(model, M.encode(model, jnp.asarray(obs_u8)[None])))[0]
 
 
 class WM:
-    """A world model behind the start/step interface of train.py: primed on real frames, then free-running on your
+    """A world model behind the start/step interface of eval.py: primed on real frames, then free-running on your
     keystrokes."""
     def __init__(self, model):
         self.m, self.key = model, jax.random.PRNGKey(0)
 
     def reset(self, frames, actions):
-        self.state = train.start(self.m, np.asarray(frames)[None], np.asarray(actions)[None])
+        self.state = M.start(self.m, np.asarray(frames)[None], np.asarray(actions)[None])
         return frames[-1]
 
     def step(self, action):
         self.key, k = jax.random.split(self.key)
-        frame, self.state = train.step(self.m, self.state, np.asarray([action]), k)
+        frame, self.state = M.step(self.m, self.state, np.asarray([action]), k)
         return np.asarray(frame)[0]
 
 
 def load_all(args):
-    models = [train.load_model(p) for p in args.model]
+    models = [M.load_model(p) for p in args.model]
     labels = args.labels or [p.parent.name for p in args.model]
     return models, labels, [WM(m) for m in models]
 
@@ -87,7 +89,7 @@ def run(args):
         frames, actions, dead = [real], [0], False
         for _ in range(args.prime):
             rng, ka, ks = jax.random.split(rng, 3)
-            a = int(jax.random.randint(ka, (), 0, train.A_N))
+            a = int(jax.random.randint(ka, (), 0, len(ACT)))
             obs, state, _, done, _ = step(ks, state, a)
             real = obs_to_u8(obs)
             frames.append(real)
@@ -170,7 +172,7 @@ def selftest(args):
     frames, actions = [obs_to_u8(obs)], [0]
     for _ in range(min(args.prime, 6)):
         rng, ka, ks = jax.random.split(rng, 3)
-        a = int(jax.random.randint(ka, (), 0, train.A_N))
+        a = int(jax.random.randint(ka, (), 0, len(ACT)))
         obs, state, _, _, _ = step(ks, state, a)
         frames.append(obs_to_u8(obs))
         actions.append(a)
@@ -199,6 +201,7 @@ def selftest(args):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, nargs="+", default=[Path("runs/base/model.npz")])
+    p.add_argument("--module", default="train", help="the module with the model interface of eval.py")
     p.add_argument("--labels", nargs="*", help="one pane label per model (default: the run directory name)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--prime", type=int, default=23, help="silent real-context prefill steps at startup")
@@ -206,7 +209,9 @@ if __name__ == "__main__":
     p.add_argument("--recon", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
-    for mod in [train]:                     # fp32 on CPU (params are fp32; bf16 is GPU-only)
-        mod.CDT = jnp.float32
-        mod.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
+    M = importlib.import_module(a.module)
+    if hasattr(M, "CDT"):                  # train.py: fp32 on CPU (params are fp32; bf16 is GPU-only)
+        M.CDT = jnp.float32
+        M.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
+    a.recon = a.recon and hasattr(M, "encode")   # the tokenizer pane needs encode and decode
     (selftest if a.selftest else run)(a)

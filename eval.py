@@ -22,7 +22,8 @@ The model is any module (default train.py) with this interface; how it generates
   step(model, state, action (B,), key) -> (frame (B, H, W, 3) uint8, state)  one frame, never sees future actions
   heads(model, frames (B, L, H, W, 3), actions (B, L), key) -> (reward (B, L), done probability (B, L))
 
-The whole run, model loading and compilation included, must finish in 180 s on the maintainer's A100.
+eval_s is timed from importing the model module to the last metric, so model loading and compilation count and
+reading eval.npz does not; it must stay within 180 s on the maintainer's A100.
 
     python eval.py --model runs/base/model.npz --tag base
 """
