@@ -1,12 +1,12 @@
 """Frozen benchmark: open-loop generation quality from random episode positions of the held-out set.
 
   gFVD  Frechet distance between real and generated 16-frame clips in the feature space of a fixed random CNN
-        (seed 1234, never trained), over stacks of 4 consecutive frames. Lower is better.
+        (seed 1234, never trained), over stacks of 4 consecutive frames, times 10^4. Lower is better.
   AF    action following: the fraction of windows where the rollout under the true actions is closer (salient-pixel
-        MSE) to the real future than a rollout from the same context and noise under random actions; ties score
+        MSE) to the real future than a rollout from the same context and keys under random actions; ties score
         half. 0.5 = the model ignores actions. Higher is better.
 
-2048 windows, 8 real context frames, 16 generated frames, 8 Euler steps per frame; fixed sampling seeds.
+2048 windows, 8 real context frames, 16 generated frames, one frame per action; fixed sampling seeds.
 
 Reward and termination heads, on the first 512 windows plus one window per recorded death (ending on the reset
 frame, so the fatal transition is its last one):
@@ -16,9 +16,18 @@ frame, so the fatal transition is its last one):
   imagined_reward_corr / imagined_return_corr / imagined_done_auc   the same heads read from the model's own rollout
         under the true actions, per step, over the 16-step return, and for the deaths at the end of the horizon.
 
+The model is any module (default train.py) with this interface; how it generates a frame is its own business:
+  load_model(path), load_meta(path) -> {"cfg": {"seed": ...}, "train_s": ...}
+  start(model, frames (B, n0, H, W, 3) uint8, actions (B, n0)) -> state       actions[t] is the action INTO frame t
+  step(model, state, action (B,), key) -> (frame (B, H, W, 3) uint8, state)  one frame, never sees future actions
+  heads(model, frames (B, L, H, W, 3), actions (B, L), key) -> (reward (B, L), done probability (B, L))
+
+The whole run, model loading and compilation included, must finish in 180 s on the maintainer's A100.
+
     python eval.py --model runs/base/model.npz --tag base
 """
 import argparse
+import importlib
 import json
 import time
 from datetime import datetime, timezone
@@ -29,12 +38,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import train
-
+H = W = 63
+A_N = 17
 CTX, HOR, N_WIN = 8, 16, 2048
 EVAL_SEED, BATCH = 0, 64
 CLIP, FEAT_SEED, THR = 4, 1234, 16 / 255
 N_HEAD_WIN, EVENT = 512, 0.05
+GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 180
 
 
 def sample_indices(data, n):
@@ -102,7 +112,7 @@ def clip_feats(feat, video):
         v = video[start:start + batch].astype(np.float32) / 255
         stacked = np.concatenate([np.repeat(v[:, :1], CLIP - 1, 1), v], 1)
         clips = np.concatenate([stacked[:, t:t + horizon] for t in range(CLIP)], -1)
-        out.append(np.asarray(feat(jnp.asarray(clips.reshape(-1, train.H, train.W, 3 * CLIP)))))
+        out.append(np.asarray(feat(jnp.asarray(clips.reshape(-1, H, W, 3 * CLIP)))))
     return np.concatenate(out)
 
 
@@ -125,7 +135,7 @@ def make_gif(real, predicted, path, k=8, scale=4):
     import imageio.v2 as imageio
 
     k = min(k, len(real))
-    separator = np.full((train.H, 2, 3), (90, 90, 110), np.uint8)
+    separator = np.full((H, 2, 3), (90, 90, 110), np.uint8)
     images = []
     for t in range(real.shape[1]):
         grid = np.concatenate([np.concatenate([real[i, t], separator, predicted[i, t]], 1) for i in range(k)], 0)
@@ -134,24 +144,26 @@ def make_gif(real, predicted, path, k=8, scale=4):
     imageio.mimsave(path, images, duration=1000 / 6, loop=0)
 
 
-def evaluate(model, data, indices):
+def rollout(wm, model, frames, actions, future_actions, key):
+    """Frames (B, T, H, W, 3) generated one action at a time from the first CTX real frames of each window."""
+    state = wm.start(model, frames[:, :CTX], actions[:, :CTX])
+    out = []
+    for action, k in zip(np.asarray(future_actions).T, jax.random.split(key, future_actions.shape[1])):
+        frame, state = wm.step(model, state, jnp.asarray(action), k)
+        out.append(frame)
+    return np.asarray(jnp.stack(out, 1))
+
+
+def evaluate(wm, model, data, indices):
     feat = nnx.jit(lambda x, m=FeatCNN(nnx.Rngs(FEAT_SEED)): m(x))
-    gdef, state = nnx.split(model.df)
-    roll = jax.jit(lambda state, ctx, ca, fa, key: train._rollout_latents(nnx.merge(gdef, state), ctx, ca, fa, key, win=model.win))
-
-    def predict(frames, actions, future_actions, seed):
-        ctx = train.encode(model, jnp.asarray(frames[:, :CTX]))
-        pz = roll(state, ctx, jnp.asarray(actions[:, :CTX]), jnp.asarray(future_actions).T, jax.random.PRNGKey(seed))
-        return np.asarray(train.decode(model, pz)).transpose(1, 0, 2, 3, 4)
-
-    random_actions = np.random.default_rng(EVAL_SEED + 7).integers(0, train.A_N, size=(len(indices), HOR)).astype(np.int32)
+    random_actions = np.random.default_rng(EVAL_SEED + 7).integers(0, A_N, size=(len(indices), HOR)).astype(np.int32)
     real_features, predicted_features, true_errors, random_errors = [], [], [], []
     preview = None
     for start in range(0, len(indices), BATCH):
         frames, actions, _, _ = window_batch(data, indices[start:start + BATCH])
-        batch_seed = int(np.random.SeedSequence([EVAL_SEED, start]).generate_state(1)[0])
-        predicted = predict(frames, actions, actions[:, CTX:], batch_seed)
-        randomized = predict(frames, actions, random_actions[start:start + BATCH], batch_seed)
+        key = jax.random.PRNGKey(int(np.random.SeedSequence([EVAL_SEED, start]).generate_state(1)[0]))
+        predicted = rollout(wm, model, frames, actions, actions[:, CTX:], key)
+        randomized = rollout(wm, model, frames, actions, random_actions[start:start + BATCH], key)
         real = frames[:, CTX:]
         last_context = frames[:, CTX - 1].astype(np.float32) / 255
         real_features.append(clip_feats(feat, real))
@@ -162,7 +174,7 @@ def evaluate(model, data, indices):
             preview = real[:8].copy(), predicted[:8].copy()
     true_errors, random_errors = np.concatenate(true_errors), np.concatenate(random_errors)
     af = float(np.mean((random_errors > true_errors + 1e-8) + 0.5 * (np.abs(random_errors - true_errors) <= 1e-8)))
-    return frechet(np.concatenate(real_features), np.concatenate(predicted_features)), af, preview
+    return GFVD_SCALE * frechet(np.concatenate(real_features), np.concatenate(predicted_features)), af, preview
 
 
 def corr(a, b):
@@ -177,29 +189,18 @@ def auc(scores, labels):
     return float((ranks[labels].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
-def evaluate_heads(model, data, indices, n_uniform):
+def evaluate_heads(wm, model, data, indices, n_uniform):
     """Teacher-forced and imagined reward / termination predictions against the record; the first n_uniform windows
     hold no reset, the rest end on one. The first frame of a window has no predicted transition and is skipped."""
-    gdef, state = nnx.split(model.df)
-    read = jax.jit(lambda state, z, a, key: train._read_heads(nnx.merge(gdef, state), z, a, key))
-
-    @jax.jit
-    def imagined(state, ctx, ca, fa, key):
-        kr, kz = jax.random.split(key)
-        df = nnx.merge(gdef, state)
-        z = train._rollout_latents(df, ctx, ca, fa.T, kr, win=model.win).transpose(1, 0, 2, 3, 4)
-        heads = train._read_heads(df, jnp.concatenate([ctx, z], 1), jnp.concatenate([ca, fa], 1), kz)
-        return jax.tree.map(lambda v: v[:, CTX:], heads)
-
     out = {k: [] for k in ("reward", "done", "im_reward", "im_done", "true_reward", "true_done")}
     for start in range(0, len(indices), BATCH):
         frames, actions, rewards, dones = window_batch(data, indices[start:start + BATCH])
         key = jax.random.PRNGKey(int(np.random.SeedSequence([EVAL_SEED, 1, start]).generate_state(1)[0]))
-        latents = train.encode(model, jnp.asarray(frames))
-        forced = read(state, latents, jnp.asarray(actions), key)
-        rolled = imagined(state, latents[:, :CTX], jnp.asarray(actions[:, :CTX]), jnp.asarray(actions[:, CTX:]),
-                          jax.random.fold_in(key, 1))
-        for k, v in zip(("reward", "done", "im_reward", "im_done"), (*forced, *rolled)):
+        kr, kz = jax.random.split(jax.random.fold_in(key, 1))
+        forced = wm.heads(model, frames, actions, key)
+        imagined = rollout(wm, model, frames, actions, actions[:, CTX:], kr)
+        rolled = wm.heads(model, np.concatenate([frames[:, :CTX], imagined], 1), actions, kz)
+        for k, v in zip(("reward", "done", "im_reward", "im_done"), (*forced, *(v[:, CTX:] for v in rolled))):
             out[k].append(np.asarray(v))
         out["true_reward"].append(rewards)
         out["true_done"].append(dones)
@@ -217,6 +218,7 @@ def evaluate_heads(model, data, indices, n_uniform):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, required=True)
+    p.add_argument("--module", default="train", help="the module with the model interface")
     p.add_argument("--data", type=Path, default=Path("data/eval.npz"))
     p.add_argument("--out", type=Path, default=Path("ledger.jsonl"))
     p.add_argument("--tag")
@@ -224,24 +226,26 @@ def main():
     p.add_argument("--windows", type=int, default=N_WIN, help=f"the frozen protocol uses {N_WIN}")
     p.add_argument("--gif", action="store_true")
     a = p.parse_args()
-    model, meta = train.load_model(a.model), train.load_meta(a.model)
     data = dict(np.load(a.data))
     start = time.perf_counter()
+    wm = importlib.import_module(a.module)
+    model, meta = wm.load_model(a.model), wm.load_meta(a.model)
     indices = sample_indices(data, a.windows)
-    gfvd, af, preview = evaluate(model, data, indices)
+    gfvd, af, preview = evaluate(wm, model, data, indices)
     n_uniform = min(N_HEAD_WIN, len(indices))
-    heads = evaluate_heads(model, data, np.concatenate([indices[:n_uniform], death_indices(data)]), n_uniform)
-    tag = a.tag or a.model.parent.name
-    row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tag": tag, "note": a.note,
-           "gFVD": gfvd, "AF": af, **heads, "train_seed": meta["cfg"]["seed"], "n_win": a.windows, "ctx": CTX,
-           "hor": HOR, "train_s": meta["train_s"], "eval_s": round(time.perf_counter() - start, 1),
-           "checkpoint": str(a.model)}
+    heads = evaluate_heads(wm, model, data, np.concatenate([indices[:n_uniform], death_indices(data)]), n_uniform)
+    eval_s = round(time.perf_counter() - start, 1)
+    row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tag": a.tag or a.model.parent.name,
+           "note": a.note, "gFVD": gfvd, "AF": af, **heads, "train_seed": meta["cfg"]["seed"], "n_win": a.windows,
+           "ctx": CTX, "hor": HOR, "train_s": meta["train_s"], "eval_s": eval_s,
+           "in_budget": meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S,
+           "module": a.module, "checkpoint": str(a.model)}
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open("a") as fh:
         fh.write(json.dumps(row) + "\n")
     print(json.dumps(row), flush=True)
     if a.gif:
-        make_gif(*preview, a.out.parent / "gifs" / f"{tag}.gif")
+        make_gif(*preview, a.out.parent / "gifs" / f"{row['tag']}.gif")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import os
 import time
 from collections import namedtuple
 from dataclasses import dataclass, asdict, fields
+from functools import partial
 from pathlib import Path
 
 os.environ.setdefault("XLA_FLAGS", "--xla_gpu_enable_triton_gemm=false")
@@ -257,26 +258,33 @@ def _flow_one(apply, seq, taus, aseq, s, rng, n_steps=STEPS):
         return z + dt * (x1 - z) / jnp.maximum(1.0 - tau_s, 1e-4), None
     return jax.lax.scan(step, jax.random.normal(kz, (B,) + seq.shape[-3:]), jnp.arange(n_steps) * dt)[0]
 
-def _rollout_latents(apply, ctx, ctx_a, acts, rng, steps=STEPS, win=WIN):
-    """Free run from context latents ctx (B, n0, ...) with incoming actions ctx_a (B, n0): one latent per action in
-    acts (T, B) -> (T, B, ...); the window slides once full; real context frames are fed at signal 1.0, generated
-    ones at CTX_SIGNAL."""
+def _start_latents(ctx, ctx_a, win=WIN):
+    """Rollout state from context latents ctx (B, n0, ...) with incoming actions ctx_a (B, n0): the latent window, its
+    actions, the next slot and the number of real frames in the window."""
     B, n0 = ctx.shape[:2]
     seq = jnp.zeros((B, win) + ctx.shape[-3:]).at[:, :n0].set(ctx)
     aseq = jnp.zeros((B, win), jnp.int32).at[:, :n0].set(ctx_a)
+    return seq, aseq, jnp.asarray(n0), jnp.asarray(n0)
 
-    def step(carry, inputs):
-        seq, aseq, n, r = carry
-        action, key = inputs
-        slide = lambda sa: tuple(jnp.concatenate([v[:, 1:], v[:, -1:]], 1) for v in sa)
-        seq, aseq = jax.lax.cond(n == win, slide, lambda sa: sa, (seq, aseq))
-        r = jnp.where(n == win, jnp.maximum(r - 1, 0), r)
-        n = jnp.minimum(n, win - 1)
-        aseq = aseq.at[:, n].set(action)
-        taus = jnp.broadcast_to(jnp.where(jnp.arange(win) < n, jnp.where(jnp.arange(win) < r, 1.0, CTX_SIGNAL), 0.0), (B, win))
-        z = _flow_one(apply, seq, taus, aseq, n, key, steps)
-        return (seq.at[:, n].set(z), aseq, n + 1, r), z
-    return jax.lax.scan(step, (seq, aseq, jnp.asarray(n0), jnp.asarray(n0)), (acts, jax.random.split(rng, acts.shape[0])))[1]
+def _advance(apply, carry, action, key, steps=STEPS):
+    """One latent for the actions (B,); the window slides once full; real context frames are fed at signal 1.0,
+    generated ones at CTX_SIGNAL."""
+    seq, aseq, n, r = carry
+    B, win = seq.shape[:2]
+    slide = lambda sa: tuple(jnp.concatenate([v[:, 1:], v[:, -1:]], 1) for v in sa)
+    seq, aseq = jax.lax.cond(n == win, slide, lambda sa: sa, (seq, aseq))
+    r = jnp.where(n == win, jnp.maximum(r - 1, 0), r)
+    n = jnp.minimum(n, win - 1)
+    aseq = aseq.at[:, n].set(action)
+    taus = jnp.broadcast_to(jnp.where(jnp.arange(win) < n, jnp.where(jnp.arange(win) < r, 1.0, CTX_SIGNAL), 0.0), (B, win))
+    z = _flow_one(apply, seq, taus, aseq, n, key, steps)
+    return (seq.at[:, n].set(z), aseq, n + 1, r), z
+
+def _rollout_latents(apply, ctx, ctx_a, acts, rng, steps=STEPS, win=WIN):
+    """Free run from context latents ctx (B, n0, ...) with incoming actions ctx_a (B, n0): one latent per action in
+    acts (T, B) -> (T, B, ...)."""
+    step = lambda carry, inputs: _advance(apply, carry, *inputs, steps)
+    return jax.lax.scan(step, _start_latents(ctx, ctx_a, win), (acts, jax.random.split(rng, acts.shape[0])))[1]
 
 def _read_heads(df, latents, actions, key):
     """Rewards (B, L) for arriving at each frame and the probability (B, L) that the transition into it ended the
@@ -289,28 +297,38 @@ def _read_heads(df, latents, actions, key):
     p = jax.nn.sigmoid(df.done_logits(s[:, :-1], actions[:, 1:L]))
     return rewards, jnp.concatenate([jnp.zeros_like(p[:, :1]), p], 1)
 
-def imagine(model, obs_u8, ctx_actions, actions, rng, steps=STEPS):
-    """Real context frames (B, n0, H, W, 3), their incoming actions (B, n0), actions (B, T) -> frames (B, T, H, W, 3),
-    the reward for arriving at each (B, T) and the probability that the transition into it ended the episode (B, T)."""
-    ctx = encode(model, jnp.asarray(obs_u8))
-    ca, fa = jnp.asarray(ctx_actions, jnp.int32), jnp.asarray(actions, jnp.int32)
-    gdef, state = nnx.split(model.df)
+_COMPILED = {}
 
-    @jax.jit
-    def run(state, ctx, ca, fa, key):
-        kr, kz = jax.random.split(key)
-        df = nnx.merge(gdef, state)
-        zt = _rollout_latents(df, ctx, ca, fa.T, kr, steps, model.win)
-        heads = _read_heads(df, jnp.concatenate([ctx, zt.transpose(1, 0, 2, 3, 4)], 1), jnp.concatenate([ca, fa], 1), kz)
-        return zt, jax.tree.map(lambda v: v[:, ctx.shape[1]:], heads)
-    zt, (rewards, dones) = run(state, ctx, ca, fa, rng)
-    return decode(model, zt).transpose(1, 0, 2, 3, 4), rewards, dones
+def _compiled(model):
+    """The jitted step and heads of a model, built once; its weights are arguments, not constants."""
+    if id(model) not in _COMPILED:
+        gdf, sdf = nnx.split(model.df)
+        gdec, sdec = nnx.split(model.dec)
 
-def predict_heads(model, obs_u8, actions, rng):
-    """Teacher-forced rewards and termination probabilities (B, L) for real frames (B, L, H, W, 3), actions (B, L)."""
-    gdef, state = nnx.split(model.df)
-    read = jax.jit(lambda state, z, a, key: _read_heads(nnx.merge(gdef, state), z, a, key))
-    return read(state, encode(model, jnp.asarray(obs_u8)), jnp.asarray(actions, jnp.int32), rng)
+        @jax.jit
+        def step(sdf, sdec, state, action, key):
+            df = nnx.merge(gdf, sdf)
+            state, z = _advance(df, state, action, key)
+            frame = nnx.merge(gdec, sdec)(z * df.zstd.value + df.zmean.value)
+            return jnp.clip(frame * 255.0, 0, 255).astype(jnp.uint8), state
+
+        heads = jax.jit(lambda sdf, z, a, key: _read_heads(nnx.merge(gdf, sdf), z, a, key))
+        _COMPILED[id(model)] = model, partial(step, sdf, sdec), partial(heads, sdf)
+    return _COMPILED[id(model)][1:]
+
+def start(model, obs_u8, actions):
+    """The interface eval.py and play_wm.py use. Real context frames (B, n0, H, W, 3) uint8 and the action into each
+    (B, n0) -> a rollout state."""
+    return _start_latents(encode(model, jnp.asarray(obs_u8)), jnp.asarray(actions, jnp.int32), model.win)
+
+def step(model, state, action, key):
+    """The actions (B,) -> the next frames (B, H, W, 3) uint8 and the new state."""
+    return _compiled(model)[0](state, jnp.asarray(action, jnp.int32), key)
+
+def heads(model, obs_u8, actions, key):
+    """Teacher-forced rewards (B, L) for arriving at each of the frames (B, L, H, W, 3), L <= WIN, and the probability
+    (B, L) that the transition into each ended the episode, given the action into each (B, L)."""
+    return _compiled(model)[1](encode(model, jnp.asarray(obs_u8)), jnp.asarray(actions, jnp.int32), key)
 
 def _orthogonalize(g, steps=5, coeffs=(3.4445, -4.775, 2.0315)):
     """Newton-Schulz orthogonalization of a stack of matrices (n, r, c)."""

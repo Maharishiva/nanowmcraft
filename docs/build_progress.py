@@ -25,6 +25,7 @@ def load():
     rows = [json.loads(l) for l in (HERE / "progress.jsonl").read_text().splitlines() if l.strip()]
     rows = [r for r in rows if r.get("protocol") == PROTOCOL and r.get("gFVD") and r["gFVD"] < 0.0025]
     for r in rows:
+        r["gFVD"] *= 1e4
         r["t"] = datetime.fromisoformat(r["ts"].replace("Z", "+00:00"))
     rows.sort(key=lambda r: r["t"])
     for i, r in enumerate(rows):
@@ -40,8 +41,8 @@ def kpis(rows):
     drop = (best["gFVD"] / first["gFVD"] - 1) * 100
     days = len({r["t"].date() for r in rows})
     cells = [
-        ("first recipe", f'{first["gFVD"]:.5f}'),
-        ("best 3-seed", f'{best["gFVD"]:.5f}'),
+        ("first recipe", f'{first["gFVD"]:.2f}'),
+        ("best 3-seed", f'{best["gFVD"]:.2f}'),
         ("change", f"{drop:+.1f}%"),
         ("runs", str(len(runs))),
         ("in budget", str(len(valid))),
@@ -69,12 +70,12 @@ def chart(rows):
 
     out = [f'<svg viewBox="0 0 {W} {H}" width="100%" font-family="inherit" font-size="11">']
     span = hi - lo
-    step = next(s for s in (0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01) if span / s <= 8)
+    step = next(s for s in (0.5, 1, 2, 5, 10, 20, 50, 100) if span / s <= 8)
     for k in range(math.ceil(lo / step), math.floor(hi / step) + 1):
         v = k * step
         y = py(v)
         out.append(f'<line x1="{PAD_L}" x2="{W - PAD_R}" y1="{y:.1f}" y2="{y:.1f}" class="grid"/>')
-        out.append(f'<text x="{PAD_L - 8}" y="{y + 4:.1f}" text-anchor="end" class="axis">{v:.5f}</text>')
+        out.append(f'<text x="{PAD_L - 8}" y="{y + 4:.1f}" text-anchor="end" class="axis">{v:g}</text>')
     seen, last_x = None, -1e9
     for r in rows:
         day = r["t"].strftime("%b %d")
@@ -116,7 +117,7 @@ def chart(rows):
             x0 < bx + bw + 8 and bx < x0 + width + 8 and abs(y + dy - by) < 13 for bx, bw, by in placed))
         placed.append((x0, width, y + dy))
         out.append(f'<text x="{x + (-6 if right else 6):.1f}" y="{y + dy:.1f}" text-anchor="{"end" if right else "start"}" class="label">{html.escape(text)}</text>')
-    out.append(f'<text x="{PAD_L}" y="{PAD_T - 8}" class="axis">gFVD (lower is better)</text>')
+    out.append(f'<text x="{PAD_L}" y="{PAD_T - 8}" class="axis">gFVD x10^4 (lower is better)</text>')
     out.append(f'<text x="{W - PAD_R}" y="{H - 6}" text-anchor="end" class="axis">experiments in time order</text>')
     out.append("</svg>")
     return "\n".join(out)
@@ -132,7 +133,7 @@ def table(rows):
         frac = (top - r["gFVD"]) / max(top - bottom, 1e-12)
         bar = "█" * round(frac * 24) + "░" * (24 - round(frac * 24))
         rel = (r["gFVD"] / top - 1) * 100
-        out.append(f'{r["t"].strftime("%Y-%m-%d"):<11} {r["gFVD"]:<9.5f} {rel:>+7.1f}%  <span class="o">{bar}</span>  {html.escape(r["milestone"])}')
+        out.append(f'{r["t"].strftime("%Y-%m-%d"):<11} {r["gFVD"]:<9.2f} {rel:>+7.1f}%  <span class="o">{bar}</span>  {html.escape(r["milestone"])}')
     return "\n".join(out)
 
 
@@ -175,7 +176,7 @@ Budget: one A100, 10 minutes cold, compilation included. Data: 500k Craftax-Clas
 {chart}
 <h2>accepted changes</h2>
 <pre>{table}</pre>
-<p class="foot">gFVD: Fréchet distance between real and generated 4-frame clips in a fixed random-CNN feature space; lower is better, and values are not comparable to I3D FVD.
+<p class="foot">gFVD: Fréchet distance between real and generated 4-frame clips in a fixed random-CNN feature space; lower is better, and values are not comparable to I3D FVD. Shown times 10^4.
 {dropped} earlier rows used a 512-window evaluator and are not shown. Built {built} from <a href="progress.jsonl">progress.jsonl</a>.</p>
 </main><div id="tip"></div>
 <script>

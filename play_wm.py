@@ -18,7 +18,6 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import flax.nnx as nnx
 import numpy as np
 from craftax.craftax_env import make_craftax_env_from_name
 
@@ -32,7 +31,6 @@ ACT = {"NOOP": 0, "LEFT": 1, "RIGHT": 2, "UP": 3, "DOWN": 4, "DO": 5, "SLEEP": 6
 HINTS = [("move", "w a s d"), ("do", "space"), ("place", "t table"), ("", "r stone"),
          ("", "f furnace"), ("", "p plant"), ("craft", "1-6"), ("sleep", "tab"),
          ("noop", "q"), ("", ""), ("reset", "bksp"), ("quit", "esc")]
-SAMPLERS = {}
 
 
 def obs_to_u8(obs):
@@ -49,57 +47,26 @@ def recon_of(model, obs_u8):
     return np.asarray(train.decode(model, train.encode(model, jnp.asarray(obs_u8)[None])))[0]
 
 
-def sampler(gdef, steps):
-    """One compiled sampler per architecture: models of the same shape share it, the weights are an argument."""
-    if (gdef, steps) not in SAMPLERS:
-        SAMPLERS[(gdef, steps)] = jax.jit(lambda state, seq, taus, aseq, slot, key: train._flow_one(
-            nnx.merge(gdef, state), seq, taus, aseq, slot, key, steps))
-    return SAMPLERS[(gdef, steps)]
-
-
 class WM:
-    """Sliding win-frame latent context; imagines the next frame from your action. Real (primed) frames sit in
-    the context at signal 1.0, imagined ones at ctx_tau, as in training-time evaluation."""
-    def __init__(self, model, steps, ctx_tau):
-        self.m, self.ctx_tau = model, ctx_tau
-        self.win = model.win
-        self.gdef, self.state = nnx.split(model.df)
-        self.sample = sampler(self.gdef, steps)
-        self.key = jax.random.PRNGKey(0)
+    """A world model behind the start/step interface of train.py: primed on real frames, then free-running on your
+    keystrokes."""
+    def __init__(self, model):
+        self.m, self.key = model, jax.random.PRNGKey(0)
 
-    def reset(self, obs0_u8):
-        z0 = train.encode(self.m, jnp.asarray(obs0_u8)[None])[0]
-        self.seq = jnp.zeros((1, self.win) + z0.shape).at[0, 0].set(z0)
-        self.aseq = jnp.zeros((1, self.win), jnp.int32)
-        self.taus = jnp.zeros((1, self.win)).at[0, 0].set(1.0)
-        self.n = 1
-        return np.asarray(train.decode(self.m, z0[None]))[0]
+    def reset(self, frames, actions):
+        self.state = train.start(self.m, np.asarray(frames)[None], np.asarray(actions)[None])
+        return frames[-1]
 
-    def step(self, action, prime_obs=None):
-        if self.n >= self.win:
-            self.seq = self.seq.at[0, :self.win - 1].set(self.seq[0, 1:])
-            self.aseq = self.aseq.at[0, :self.win - 1].set(self.aseq[0, 1:])
-            self.taus = self.taus.at[0, :self.win - 1].set(self.taus[0, 1:]).at[0, self.win - 1].set(0.0)
-            self.n = self.win - 1
-        s = self.n
-        self.aseq = self.aseq.at[0, s].set(action)
-        if prime_obs is not None:
-            z = train.encode(self.m, jnp.asarray(prime_obs)[None])[0]
-            level = 1.0
-        else:
-            self.key, kr = jax.random.split(self.key)
-            z = self.sample(self.state, self.seq, self.taus, self.aseq, jnp.asarray(s, jnp.int32), kr)[0]
-            level = self.ctx_tau
-        self.seq = self.seq.at[0, s].set(z)
-        self.taus = self.taus.at[0, s].set(level)
-        self.n += 1
-        return np.asarray(train.decode(self.m, z[None]))[0]
+    def step(self, action):
+        self.key, k = jax.random.split(self.key)
+        frame, self.state = train.step(self.m, self.state, np.asarray([action]), k)
+        return np.asarray(frame)[0]
 
 
 def load_all(args):
     models = [train.load_model(p) for p in args.model]
     labels = args.labels or [p.parent.name for p in args.model]
-    return models, labels, [WM(m, args.steps, args.ctx_tau) for m in models]
+    return models, labels, [WM(m) for m in models]
 
 
 def run(args):
@@ -117,17 +84,18 @@ def run(args):
         rng, r0 = jax.random.split(rng)
         obs, state = reset(r0)
         real = obs_to_u8(obs)
-        imgs = [wm.reset(real) for wm in wms]
-        dead = False
+        frames, actions, dead = [real], [0], False
         for _ in range(args.prime):
             rng, ka, ks = jax.random.split(rng, 3)
             a = int(jax.random.randint(ka, (), 0, train.A_N))
             obs, state, _, done, _ = step(ks, state, a)
             real = obs_to_u8(obs)
-            imgs = [wm.step(a, real) for wm in wms]
+            frames.append(real)
+            actions.append(a)
             if done:
                 dead = True
                 break
+        imgs = [wm.reset(np.stack(frames), np.asarray(actions)) for wm in wms]
         if args.recon:
             recon = recon_of(models[0], real)
         t = 0
@@ -199,16 +167,15 @@ def selftest(args):
     rng = jax.random.PRNGKey(args.seed)
     rng, r0 = jax.random.split(rng)
     obs, state = reset(r0)
-    real = obs_to_u8(obs)
-    for wm in wms:
-        wm.reset(real)
+    frames, actions = [obs_to_u8(obs)], [0]
     for _ in range(min(args.prime, 6)):
         rng, ka, ks = jax.random.split(rng, 3)
         a = int(jax.random.randint(ka, (), 0, train.A_N))
         obs, state, _, _, _ = step(ks, state, a)
-        real = obs_to_u8(obs)
-        for wm in wms:
-            wm.step(a, real)
+        frames.append(obs_to_u8(obs))
+        actions.append(a)
+    for wm in wms:
+        wm.reset(np.stack(frames), np.asarray(actions))
     up = lambda im: np.repeat(np.repeat(np.asarray(im), 4, 0), 4, 1)
     rows, t0 = [], time.time()
     for a in [4] * 4 + [2] * 3 + [3] * 3:
@@ -235,8 +202,6 @@ if __name__ == "__main__":
     p.add_argument("--labels", nargs="*", help="one pane label per model (default: the run directory name)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--prime", type=int, default=23, help="silent real-context prefill steps at startup")
-    p.add_argument("--steps", type=int, default=train.STEPS, help="ODE sampling steps per frame")
-    p.add_argument("--ctx-tau", type=float, default=train.CTX_SIGNAL)
     p.add_argument("--scale", type=int, default=0, help="pixels per game pixel (default: fit the pane count)")
     p.add_argument("--recon", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--selftest", action="store_true")
