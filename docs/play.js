@@ -7,7 +7,7 @@ const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every sav
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 const q = new URLSearchParams(location.search);
 const MODEL = q.get('model') ??   // a pinned revision, so the copy kept in the browser's cache stays valid
-  'https://huggingface.co/maharishiva/tinywmcraft/resolve/8346c17f18c91ad577f9b7f1227fb7c614d4a432/web/play.onnx';
+  'https://huggingface.co/maharishiva/tinywmcraft/resolve/adca1c35e6f2c677088167df6b68c2df23306fe2/web/play.onnx';
 const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const CLIP = 300, MAX_SCALE = 7;              // frames kept for the clip, largest pixel scale

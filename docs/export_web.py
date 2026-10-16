@@ -2,7 +2,7 @@
 
     python docs/export_web.py --model runs/record1/model.npz
 
-Writes docs/play.onnx (gitignored; weights stored fp16, computed in fp32) and docs/starts.bin. One call imagines the
+Writes docs/play.onnx (gitignored; fp32) and docs/starts.bin. One call imagines the
 last frame of a full 32-frame window: a pass over the 31 past frames caches every block's temporal keys and values and
 the last past frame's summary; 8 Euler steps as in train._flow_one then run only the new frame's 16 tokens against that
 cache, exact since spatial attention is per frame and temporal attention causal (6.8 GFLOP per call by XLA's count,
@@ -177,17 +177,10 @@ SPECS = dict(past=((1, PAST, train.GLAT, train.GLAT, train.TOK), jnp.float32), t
              rnoise=((1, train.GLAT, train.GLAT, train.TOK), jnp.float32))
 
 
-def half_weights(model, min_size=1024):
-    """Round every matrix-sized weight to fp16 (in place), so that the fp16 file computes exactly what the JAX
-    reference with these weights computes."""
-    half = lambda w: w.astype(jnp.float16).astype(w.dtype) if w.size >= min_size else w
-    for mod in (model.df, model.dec):
-        nnx.update(mod, jax.tree.map(half, nnx.state(mod)))
-
-
-def export(model, path, min_size=1024):
-    """jax2onnx at opset 18, onnxruntime's basic constant folding, then fp16 storage with a Cast for each large
-    initializer (onnxruntime folds the Casts back to fp32 weights at load)."""
+def export(model, path):
+    """jax2onnx at opset 18 and onnxruntime's basic constant folding. Weights stay fp32: stored fp16 with a Cast each,
+    the file halves, but onnxruntime-web's asyncify build (Safari, which has no JSPI) leaks the cast weights on every
+    call, about 40 MB a step, and iPhones kill the tab within a few moves."""
     import onnx
     import onnxruntime as ort
     from jax2onnx import to_onnx
@@ -199,16 +192,7 @@ def export(model, path, min_size=1024):
         so.optimized_model_filepath, so.log_severity_level = f"{tmp}/folded.onnx", 3
         ort.InferenceSession(m.SerializeToString(), so, providers=["CPUExecutionProvider"])
         m = onnx.load(so.optimized_model_filepath)
-    nodes = []
-    for init in m.graph.initializer:
-        w, name = onnx.numpy_helper.to_array(init), init.name
-        if w.dtype == np.float32 and w.size >= min_size:
-            assert np.array_equal(w.astype(np.float16).astype(np.float32), w), name
-            init.CopyFrom(onnx.numpy_helper.from_array(w.astype(np.float16), name + "_f16"))
-            nodes.append(onnx.helper.make_node("Cast", [name + "_f16"], [name], to=onnx.TensorProto.FLOAT))
-    nodes += m.graph.node
-    del m.graph.node[:], m.opset_import[:]
-    m.graph.node.extend(nodes)
+    del m.opset_import[:]
     m.opset_import.append(onnx.helper.make_opsetid("", 18))     # onnxruntime's save declares every domain it knows
     m.ir_version = 8
     onnx.checker.check_model(m, full_check=True)
@@ -240,7 +224,6 @@ def main():
     picks = pack_starts(model, data, docs / "starts.bin", a.starts)
     print(f"starts.bin: {len(picks)} windows (env, last step) {picks}, "
           f"{(docs / 'starts.bin').stat().st_size / 1e6:.2f} MB")
-    half_weights(model)
     export(model, docs / "play.onnx")
     print(f"play.onnx: {(docs / 'play.onnx').stat().st_size / 1e6:.1f} MB")
     if a.copy:
