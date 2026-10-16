@@ -12,7 +12,7 @@ const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const MOVES = 1000, MAX_SCALE = 7;            // moves in a run, then it ends; largest pixel scale
 const L = 31 * 512, RGB = 63 * 63 * 3;        // one 31-frame latent window, one frame
-const TOP = 7, H = TOP + 88, MAP = 49;        // the score strip, the frame, the keys (drawn in clips); the map part of the frame
+const TOP = 7, H = TOP + 88, MAP = 49;        // the score strip, the frame, the keys under it; the map part of the frame
 const BG = '#0a0a0a', FG = '#f0f0ee', ORANGE = '#ff6a13', KEY = '#1c1c1e', EDGE = '#3a3a3e', CAP = '#aaaaa8';
 // index = action; e.code, so the keys work on any keyboard layout
 const CODES = ['KeyQ', 'KeyA', 'KeyD', 'KeyW', 'KeyS', 'Space', 'Tab', 'KeyR', 'KeyT', 'KeyF', 'KeyP',
@@ -26,12 +26,12 @@ const TOUCH = matchMedia('(pointer: coarse)').matches;
 // the keyboard of play.gif under the frame in clips: action, x, y, width of each key (-1 shows any other key pressed), and
 // the reward square's x; SPACE exactly as wide as the two boxes above it
 const BOARD = [[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], RX = 52;
-// the same keys as buttons, each at row, column, columns spanned: beside the frame in its geometry (columns of 9, 9, 9, 18
-// and 9 game pixels), under it on the crafting keys' six columns, WASD on the right under the thumb on touch screens
+// the same keys as buttons, the size of the action keys, each at row, column, columns spanned: SPACE about two keys wide, up
+// to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens
 const GRID = {
-  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 2], other: [1, 4, 1], gauge: [1, 5, 1] },
-  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 3], other: [1, 4, 2], gauge: [1, 6, 1] },
-  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], SPACE: [2, 1, 3], other: [1, 1, 2], gauge: [1, 3, 1] },
+  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 2] },
+  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 3] },
+  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], SPACE: [2, 1, 3] },
 };
 const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'SPACE']];
 const READY = TOUCH ? 'ready: tap the keys or the map' : 'ready: W A S D to move, SPACE to hit';
@@ -58,7 +58,7 @@ const root = document.getElementById('play');
 const pix = (s, color = CAP, cls = 'px', u = '--fp') => `<img class="${cls}" src="${label(s, color)}" style="height:calc(var(${u}) * 5)" alt="">`;
 root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div></div>
 <div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${NAMES[a]}">${pix(k, CAP, 'px', '--px')}</button>`).join('')}
-<div class="key" data-k="other"></div><div class="key" data-k="gauge"><i></i></div><div class="tip">${TIPS[0]}</div></div>
+<div class="tip">${TIPS[0]}</div></div>
 <div class="st"></div></div>
 <div class="side"><div class="acts">${ICONS.map(a => `<button class="key" data-a="${a}" title="${NAMES[a]}">` +
   `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">${pix(CAPS[a], CAP, 'px k')}</button>`).join('')}
@@ -67,7 +67,6 @@ root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" heigh
 <button class="key" data-a="reset" title="new world">${pix('NEW WORLD')}</button></div></div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const keys = root.querySelector('.keys'), acts = root.querySelector('.acts'), btns = root.querySelector('.btns');
-const other = keys.querySelector('[data-k=other]'), gauge = keys.querySelector('[data-k=gauge] i');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
 let session, gpu, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
@@ -77,17 +76,16 @@ let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' o
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on phones the space goes to the controls
 
-function fit() {  // the largest integer scale that fits. Beside the game the action keys span the map, and the three buttons,
-  // stacked, end with the movement keys under the frame; under the game everything sits on one grid of six columns
+function fit() {  // the largest integer scale that fits. Every key is one size, one game pixel apart: beside the game the action
+  // keys span the map and the three buttons, stacked, end with the movement keys under the frame (63 + 1 + 11.5 + 1 + 11.5 = 88);
+  // under the game everything sits on one grid of six columns
   const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
   const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
-  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;   // one game pixel between keys, as under the frame
+  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
   const grid = GRID[row ? 'row' : TOUCH ? 'right' : 'left'];
-  Object.assign(keys.style, row
-    ? { gridTemplateColumns: [9, 9, 9, 18, 9].map(w => w * s + 'px').join(' '), gridAutoRows: 9 * s + 'px', margin: `${3 * s}px 0 0 ${3 * s}px` }
-    : { gridTemplateColumns: `repeat(6, ${b}px)`, gridAutoRows: b + 'px', margin: `${s}px 0 0` });
-  keys.style.gap = s + 'px';
+  Object.assign(keys.style, { gridTemplateColumns: row ? `repeat(4, ${b}px) ${59 * s - 4 * b}px` : `repeat(6, ${b}px)`,
+    gridAutoRows: b + 'px', gap: s + 'px', marginTop: s + 'px' });
   for (const el of keys.querySelectorAll('.key')) {
     const [r, c, n] = grid[el.dataset.k];
     el.style.gridArea = `${r} / ${c} / span 1 / span ${n}`;
@@ -95,7 +93,7 @@ function fit() {  // the largest integer scale that fits. Beside the game the ac
   Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
     marginTop: row ? TOP * s + 'px' : '' });
   Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
-    gridAutoRows: (row ? 11 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 11 + 2 gaps = map to SPACE's bottom
+    gridAutoRows: (row ? 12 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to SPACE's bottom
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
   root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
   msg.style.padding = `${TOP * s}px 16px 0`;   // what shows over the game sits on the frame
@@ -186,13 +184,9 @@ function paint(c, f, board = false) {  // one move: the score, the frame with a 
 }
 
 function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the frame, key and reward, not the pixels drawn
-  const f = { rgb, a, r, score, best, moves, end }, move = MOVE.some(m => m[0] === a);
+  const f = { rgb, a, r, score, best, moves, end };
   paint(ctx, f);
   for (const el of root.querySelectorAll('.key[data-a]')) el.classList.toggle('on', +el.dataset.a === a);   // the key pressed
-  other.classList.toggle('on', a !== undefined && !move);   // any other key pressed, by name, as in play.gif
-  other.innerHTML = a !== undefined && !move ? pix(CAPS[a], BG, 'px', '--px') : '';
-  gauge.style.height = `${100 * Math.round(7 * Math.min(Math.max(r, 0), 1)) / 7}%`;   // the reward, in steps of a game pixel
-  gauge.classList.toggle('hot', r > 0.5);
   tick++;
   frames.push(f);
 }

@@ -31,10 +31,6 @@
 #play .key:active { background: #3a3a3e; }
 #play .key.on { background: #ff6a13; border-color: #ff6a13; }
 #play .key.on img.px { filter: brightness(0); }   /* dark labels on orange, as under the frame */
-#play div.key { cursor: default; }
-#play [data-k=gauge] { align-items: flex-end; }
-#play [data-k=gauge] i { width: 100%; background: #aaaaa8; }
-#play [data-k=gauge] i.hot { background: #ff6a13; }
 #play img { width: calc(7 * var(--px, 5px)); height: calc(7 * var(--px, 5px)); image-rendering: pixelated; }
 #play img.px { width: auto; }
 #play img.k { position: absolute; right: 3px; bottom: 3px; }
