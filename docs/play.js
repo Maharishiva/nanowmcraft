@@ -402,7 +402,8 @@ async function send(done = '') {  // the clip alone: given text as well, apps on
   }
 }
 
-const fail = e => { msg.textContent = String(e.message ?? e); status('error'); };
+let stage = 'loading';   // what was going on, shown with an error
+const fail = e => { msg.textContent = `${stage}: ${e.name && e.name !== 'Error' ? e.name + ': ' : ''}${e.message ?? e}`; status('error'); };
 
 function press(a) {  // an action index, 'reset', 'save' or 'share'
   if (a === 'save' || a === 'share') {   // never blocked for long: a share sheet left open holds nothing
@@ -420,9 +421,11 @@ function loading(what, frac, note) {  // the screen over the game until it plays
     `<span>${note}</span>`;
 }
 
-async function load(url, what, keep) {  // fetch with a progress bar; keep: from and into the browser's cache
-  const box = keep && await self.caches?.open('tinywmcraft').catch(() => null), hit = await box?.match(url);
-  if (hit) return new Uint8Array(await hit.arrayBuffer());
+async function load(url, what, keep) {  // fetch with a progress bar; keep: from and into the browser's cache. Any call to the
+  // cache can fail (Safari: TypeError "Internal error"); then it is a download, never an error
+  const box = keep && await self.caches?.open('tinywmcraft').catch(() => null);
+  const hit = await box?.match(url).then(r => r?.arrayBuffer()).catch(() => null);
+  if (hit) return new Uint8Array(hit);
   loading(`loading the ${what}`, 0, 'connecting');
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
@@ -435,10 +438,14 @@ async function load(url, what, keep) {  // fetch with a progress bar; keep: from
     got += value.length;
     loading(`loading the ${what}`, got / total, `${(got / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB, then it runs on your GPU`);
   }
-  const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+  const bytes = new Uint8Array(got);   // one copy, the parts go
+  parts.reduce((at, x) => (bytes.set(x, at), at + x.length), 0);
+  parts.length = 0;
   if (box) {   // the next visit loads it from here; older versions go
-    for (const k of await box.keys()) if (k.url !== url) await box.delete(k);
-    await box.put(url, new Response(bytes)).catch(() => {});
+    try {
+      for (const k of await box.keys()) if (k.url !== url) await box.delete(k);
+      await box.put(url, new Response(bytes));
+    } catch {}
   }
   return bytes;
 }
@@ -448,12 +455,16 @@ async function main() {
   starts = { n, lat: new Float32Array(b.buffer, 4, n * L), acts: b.subarray(4 + 4 * n * L, 4 + 4 * n * L + 31 * n) };
   starts.rgb = b.subarray(4 + 4 * n * L + 31 * n);
   reset();
+  stage = 'loading the model';
   const model = await load(MODEL, 'world model', true);
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
+  stage = 'compiling';
   const s = await ort.InferenceSession.create(model, { executionProviders: [{ name: 'webgpu' }], enableGraphCapture: CAPTURE,
     logSeverityLevel: 3 });
   gpu = bind(ort.env.webgpu.device);
+  stage = 'first run';
   await run(s, feeds());   // warm-up: compiles the shaders and captures the graph before the first keypress
+  stage = 'move';
   session = s;
   msg.textContent = '';
   hint();
