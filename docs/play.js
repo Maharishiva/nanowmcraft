@@ -33,7 +33,7 @@ const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   G: '011100101101011', H: '101101111101101', I: '111010010010111', M: '101111111101101', N: '110101101101101',
   O: '010101101101010', U: '101101101101111', V: '101101101101010', Y: '101101010010010', '.': '000000000000010',
   '/': '001001010100100', 0: '111101101101111', 7: '111001001001001', 8: '111101111101111', 9: '111101111001111',
-  ' ': '000000000000000',
+  ' ': '000000000000000', '!': '010010010000010',
 };
 // the clip can go to the system share sheet only where the browser shares files
 const FILES = !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] });
@@ -122,18 +122,16 @@ function draw(rgb, a, r = 0) {  // the score, the frame with a +1 for a predicte
   if (frames.length > CLIP) frames.shift();
 }
 
-function wasted() {  // the death screen: the frame washed red, DEAD and the score; it replaces the last frame, so it ends the clip
-  const img = ctx.getImageData(0, TOP, 63, 63), d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const y = 0.3 * d[i] + 0.59 * d[i + 1] + 0.11 * d[i + 2];
-    [d[i], d[i + 1], d[i + 2]] = [70 + 0.7 * y, 0.18 * y, 0.18 * y];
-  }
-  ctx.putImageData(img, 0, TOP);
-  ctx.fillStyle = 'rgba(10, 10, 10, 0.6)';
-  ctx.fillRect(0, TOP + 15, 63, 31);
-  text('DEAD', 9, TOP + 18, FG, ctx, 3);
-  const n = String(score), w = 4 * 'SCORE '.length + 8 * n.length - 2;
-  text(n, text('SCORE ', (63 - w) >> 1, TOP + 39, CAP), TOP + 36, ORANGE, ctx, 2);
+function wasted() {  // Minecraft's death screen: its red gradient over the frame, DEAD! and the score; the clip ends on it
+  const g = ctx.createLinearGradient(0, TOP, 0, TOP + 63);
+  g.addColorStop(0, 'rgba(150, 20, 20, 0.42)');
+  g.addColorStop(1, 'rgba(128, 40, 40, 0.6)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, TOP, 63, 63);
+  const shadowed = (s, x, y, color, u = 1) => (text(s, x + 1, y + 1, 'rgba(40, 0, 0, 0.6)', ctx, u), text(s, x, y, color, ctx, u));
+  shadowed('DEAD!', 12, TOP + 10, FG, 2);
+  const n = String(score), x = (63 - 24 - 4 * n.length + 1) >> 1;
+  shadowed(n, shadowed('SCORE ', x, TOP + 24, FG), TOP + 24, ORANGE);
   frames[frames.length - 1] = ctx.getImageData(0, 0, 63, H);
 }
 
