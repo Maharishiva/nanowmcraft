@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>tinywmcraft: play a world model trained in 10 minutes for 10 cents</title>
+<meta name="description" content="A 14M-parameter world model of Craftax, a 2D Minecraft, trained from pixels in 10 minutes on one A100. Play it in your browser, then try to beat it in one 10-minute run.">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://maharishiva.github.io/tinywmcraft/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 3 3'%3E%3Crect width='3' height='3' fill='%230a0a0a'/%3E%3Crect x='1' y='1' width='1' height='1' fill='%23ff6a13'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tinywmcraft">
+<meta property="og:url" content="https://maharishiva.github.io/tinywmcraft/">
+<meta property="og:title" content="Play a world model trained in 10 minutes for 10 cents">
+<meta property="og:description" content="A 14M-parameter world model of Craftax, a 2D Minecraft, learned from pixels. Play it in your browser. Beat it in one 10-minute A100 run.">
+<meta property="og:image" content="https://maharishiva.github.io/tinywmcraft/assets/play.gif">
+<meta property="og:image:width" content="560">
+<meta property="og:image:height" content="388">
+<meta property="og:image:alt" content="Real Craftax on the left, the world model on the right, the pressed key below">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Play a world model trained in 10 minutes for 10 cents">
+<meta name="twitter:description" content="A 14M-parameter world model of Craftax, a 2D Minecraft, learned from pixels. Play it in your browser. Beat it in one 10-minute A100 run.">
+<meta name="twitter:image" content="https://maharishiva.github.io/tinywmcraft/assets/play.gif">
+<meta name="twitter:image:alt" content="Real Craftax on the left, the world model on the right, the pressed key below">
+<link rel="stylesheet" href="play.css">
+<style>
+:root { --bg:#0a0a0a; --fg:#f0f0ee; --dim:#6a6a6a; --mid:#8a8a8a; --o:#ff6a13; --line:#1c1c1c; }
+* { box-sizing:border-box; }
+html { -webkit-text-size-adjust:100%; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.65 "JetBrains Mono","SF Mono",Menlo,Consolas,monospace; }
+main { max-width:820px; margin:0 auto; padding:36px 24px 56px; }
+a { color:var(--o); text-decoration:none; } a:hover { text-decoration:underline; }
+.logo { width:200px; height:auto; display:block; }
+h1 { font-size:26px; line-height:1.25; margin:22px 0 12px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { margin:0 0 28px; color:#c8c8c4; }
+h2 { font-size:15px; margin:52px 0 14px; scroll-margin-top:16px; }
+h2::before { content:"## "; color:var(--o); }
+p, ol, dl { margin:0 0 14px; }
+ol { padding-left:3ch; }
+code { color:var(--o); font-family:inherit; }
+b { font-weight:700; }
+.links { display:flex; flex-wrap:wrap; gap:4px 22px; margin:26px 0 8px; }
+.links a::before { content:"→ "; color:var(--dim); }
+figure { margin:22px 0; }
+figure img { display:block; max-width:100%; height:auto; margin:0 auto; }
+img.px { image-rendering:pixelated; }
+figcaption, .note { color:var(--mid); font-size:12px; line-height:1.5; margin-top:8px; }
+figcaption { text-align:center; text-wrap:balance; }
+dl.rules { display:grid; grid-template-columns:9ch 1fr; gap:6px 0; }
+dl.rules dt { color:var(--o); } dl.rules dd { margin:0; }
+#chart { display:block; width:100%; height:170px; margin:4px 0 14px; font-size:11px; }
+#chart .grid { stroke:var(--line); } #chart .axis { fill:var(--dim); }
+#chart .step { fill:none; stroke:var(--o); stroke-width:2; stroke-linejoin:round; }
+#chart .pt { fill:var(--o); stroke:var(--bg); stroke-width:2; } #chart .hit { fill:transparent; }
+#chart a:hover .pt { fill:var(--fg); } #chart .val { fill:var(--fg); }
+.scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 -4px; }
+table { border-collapse:collapse; font-size:12px; line-height:1.45; min-width:680px; width:100%; }
+th, td { padding:7px 5px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+th { color:var(--dim); font-weight:normal; white-space:nowrap; }
+td.n, th.n { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+td.ch { min-width:20ch; } td.m { white-space:nowrap; }
+.sd { color:var(--mid); }
+tr.rec .g { color:var(--o); }
+tr.base td { color:var(--dim); } tr.base a { color:#b05a26; }
+.refs a { white-space:nowrap; }
+footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; border-top:1px solid var(--line); }
+@media (max-width:560px) {
+  body { font-size:13.5px; }
+  main { padding:24px 16px 44px; }
+  .logo { width:160px; }
+  h1 { font-size:21px; margin-top:16px; }
+  h2 { margin-top:40px; }
+  dl.rules { grid-template-columns:1fr; gap:0; } dl.rules dd { margin-bottom:8px; }
+  .scroll { margin:0; } table { min-width:0; } thead { display:none; }
+  tbody tr { display:flex; flex-wrap:wrap; gap:0 14px; padding:10px 0; border-bottom:1px solid var(--line); }
+  td { padding:0; border:0; } td.n { text-align:left; }
+  td.ch { order:1; flex-basis:100%; min-width:0; margin:3px 0; } td.m { order:2; }
+  td[data-l]::before { content:attr(data-l); color:var(--dim); }
+}
+</style>
+</head>
+<body><main>
+<header>
+<img class="logo" src="assets/logo-dark.png" alt="tinywmcraft" width="2140" height="360">
+<h1>Play a world model trained in 10 minutes for 10 cents</h1>
+<p class="sub">tinywmcraft is a 14M-parameter world model of Craftax, a 2D Minecraft, learned from pixels. Every frame below is drawn by the network on your GPU, one keypress at a time. It is also an open benchmark: beat it in one 10-minute A100 run.</p>
+</header>
+
+<div id="play"></div>
+<script type="module" src="play.js"></script>
+
+<nav class="links">
+<a href="https://github.com/Maharishiva/tinywmcraft">code</a>
+<a href="#leaderboard">leaderboard</a>
+<a href="https://github.com/Maharishiva/tinywmcraft/blob/main/program.md">how to submit</a>
+<a href="https://huggingface.co/maharishiva/tinywmcraft">checkpoints</a>
+<a href="progress.html">research log</a>
+</nav>
+
+<h2 id="what">what is this</h2>
+<p><a href="https://github.com/MichaelTMatthews/Craftax">Craftax-Classic</a> is a fast 2D take on Minecraft: walk, chop trees, craft tools, stay alive. A frozen pretrained agent played it at mid-game skill and recorded 500k transitions: the frame, the key, the reward and whether the episode ended.</p>
+<p>tinywmcraft learns the game from that and nothing else. No game state, tile labels or pretrained features go in. Given a few frames and a key, it generates the next frame, the reward and whether the episode ends. Feed its own frames back in and you can play inside it. That loop is the player above.</p>
+<p>The model has <b>13.9M parameters</b>: 5.2M in the tokenizer, 8.6M in the world model. A cold training run plus the eval is <b>about 12 minutes of one A100, about $0.10</b> on Colab.</p>
+
+<h2 id="leaderboard">leaderboard</h2>
+<p>Record gFVD over time. Lower is better; each point links to its pull request.</p>
+<svg id="chart" role="img" aria-label="Record gFVD over time"></svg>
+<div class="scroll"><table id="lb">
+<thead><tr><th class="n">#</th><th>date</th><th>author</th><th>change</th><th class="n">gFVD ↓</th><th class="n">AF ↑</th><th class="n">reward<br>precision ↑</th><th class="n">train s</th><th>code</th><th>weights</th></tr></thead>
+<tbody><tr><td colspan="10">loading records.jsonl…</td></tr></tbody>
+</table></div>
+<p class="note">gFVD is shown ×10⁴ everywhere, so 14.7 means 0.00147. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold and scored by eval.py on a Colab A100. Train s is the slowest seed. Dim rows are the <a href="microwm.html">microwm.py</a> baseline. Data: <a href="records.jsonl">records.jsonl</a>.</p>
+
+<h2 id="speedrun">the speedrun</h2>
+<p>Beat the record gFVD in one 600-second A100 run.</p>
+<dl class="rules">
+<dt>data</dt><dd><code>train.npz</code>, 500k transitions. Nothing else.</dd>
+<dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
+<dt>eval</dt><dd><code>eval.py</code> is frozen and must finish in 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
+<dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
+<dt>gates</dt><dd>gFVD beats the record by a noise-aware margin. AF and every head metric stay within 2% of the record.</dd>
+</dl>
+<p>To submit:</p>
+<ol>
+<li>Train seeds 0, 1 and 2 and score each with <code>eval.py</code>.</li>
+<li>Open a pull request with your code, the three ledger rows and links to the three checkpoints on Hugging Face.</li>
+<li>The maintainer reruns it next to the record. If it passes the gates, it is the new record.</li>
+</ol>
+<p>The full rules are in <a href="https://github.com/Maharishiva/tinywmcraft/blob/main/program.md">program.md</a>.</p>
+
+<!-- STORY -->
+<h2 id="story">800 experiments</h2>
+<p>The search took about 800 scored runs, almost all in eight days of September, roughly 115 A100-hours. The ideas fill 172 experiment branches; 131 of them were opened on a single day. Only 14 changes were ever accepted. For scale: copying the last frame scores 133, the first recipe scored 17.7, the record scores 14.7. The biggest enemy turned out to be the compiler. Same code and same seed, compiled fresh, give a different program, because XLA's autotuner picks different GPU kernels each time: seed 0 of one unchanged recipe landed anywhere from 12.6 to 15.0, a bigger swing than almost any idea we tried. One of the best wins needed no training at all: stop adding noise to the real context frames, and the score fell from 18.0 to 16.6. Doubling the sampling steps did nothing.</p>
+<p class="links"><a href="progress.html">every run as a dot: research log</a></p>
+<!-- /STORY -->
+
+<h2 id="how">how it works</h2>
+<p><b>Tokenizer.</b> A 63×63 frame becomes a 4×4×32 latent. The 81 tiles of 7×7 pixels are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks. The decoder mirrors it. Training mixes clean, half-masked and noised frames and always reconstructs the clean one.</p>
+<p><b>World model.</b> Six transformer blocks of width 256 alternate spatial attention over the 16 latent tokens with causal attention across 32 frames. The action and each frame's noise level condition adaLN-zero blocks. Flow matching predicts the clean latent, and eight Euler steps generate each frame.</p>
+<p><b>Heads.</b> A reward head (two-hot over 255 symlog bins) and a termination head read each frame's mean token, so the model returns frames, rewards and episode ends.</p>
+<p><b>Optimizer.</b> Muon on every matrix and conv kernel, AdamW on embeddings, biases and norms. Warmup, constant, then linear decay over the last 20% of steps.</p>
+<p><b>Kernels.</b> At width 256 a training step is bound by memory traffic, so attention, modulated norms, gated residuals and GELU run as fused Pallas kernels on NVIDIA GPUs, with an XLA fallback elsewhere.</p>
+<figure><img class="px" src="assets/architecture.gif" alt="Frames go through the encoder to 4×4×32 latents, the world model denoises the newest latent in eight steps conditioned on the key, and the decoder shows the frame at every step" width="1200" height="400" loading="lazy"><figcaption>One generated frame. The encoder turns frames into 4×4×32 latents, the world model denoises the newest latent in eight flow-matching steps conditioned on the key, and the decoder shows the frame at every step.</figcaption></figure>
+
+<h2 id="eval">evaluation</h2>
+<p>The frozen evaluator takes 2048 windows from held-out episodes, primes the model on eight real frames and generates 16 frames open-loop.</p>
+<p><b>gFVD ↓</b> (×10⁴) is the Fréchet distance between real and generated 4-frame clips in the feature space of a fixed random CNN. It needs no external checkpoint and is not comparable to I3D FVD.</p>
+<p><b>AF ↑</b> is action following: the share of windows where the true actions predict the salient pixels better than random actions, under the same context and noise. A model that ignores actions scores 0.5.</p>
+<p><b>Heads</b> are scored by reward correlation, reward event recall and precision, and done AUC, both on real frames and on the model's own imagined rollout.</p>
+<figure><img class="px" src="assets/demo.gif" alt="Real frames beside imagined frames for four held-out episodes" width="774" height="438" loading="lazy"><figcaption>Four held-out episodes, primed with 5 / 15 / 30 / 90 real frames, then 32 imagined frames. Ground truth left, world model right, same actions.</figcaption></figure>
+
+<h2 id="microwm">the whole model on one page</h2>
+<p><a href="microwm.html">microwm.py</a> is the complete model in one file: tokenizer, world model, heads and training. Under 250 lines, no custom kernels. Read it on screen or print it as a poster.</p>
+
+<h2 id="refs">references</h2>
+<p class="refs"><a href="https://arxiv.org/abs/2402.16801">Craftax</a> · <a href="https://arxiv.org/abs/2210.02747">Flow Matching</a> · <a href="https://arxiv.org/abs/2407.01392">Diffusion Forcing</a> · <a href="https://arxiv.org/abs/2212.09748">DiT</a> · <a href="https://arxiv.org/abs/2509.24527">Dreamer 4</a> · <a href="https://kellerjordan.github.io/posts/muon/">Muon</a> · <a href="https://arxiv.org/abs/1812.01717">FVD</a></p>
+
+<footer>MIT license · <a href="https://github.com/Maharishiva/tinywmcraft">github</a> · <a href="https://huggingface.co/maharishiva/tinywmcraft">checkpoints</a> · <a href="https://huggingface.co/datasets/maharishiva/tinywmcraft_500k">dataset</a> · <a href="progress.html">research log</a></footer>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const url = u => /^https:\/\//.test(u || "") ? esc(u) : "";
+const fx = (v, d) => v == null ? "–" : (+v).toFixed(d);
+const t = d => Date.parse(d);
+const prName = u => (u.match(/\/pull\/(\d+)/) || [])[1] ? "#" + u.match(/\/pull\/(\d+)/)[1] : (u.match(/\/commit\/(\w{7})/) || [, "link"])[1];
+const a = (u, text) => url(u) ? `<a href="${url(u)}">${esc(text)}</a>` : "–";
+
+function table(rows) {
+  const top = Math.max(...rows.map(r => r.n));
+  $("#lb tbody").innerHTML = rows.map(r => `<tr class="${r.n ? (r.n === top ? "rec" : "") : "base"}">
+<td class="n" data-l="${r.n ? "#" : ""}">${r.n || "base"}</td><td class="m">${esc(r.date)}</td><td class="m">${a("https://github.com/" + encodeURIComponent(r.author || ""), r.author)}</td>
+<td class="ch">${esc(r.change)}</td><td class="n"><span class="g">${fx(r.gFVD, 1)}</span> <span class="sd">± ${fx(r.gFVD_sd, 1)}</span></td>
+<td class="n" data-l="AF ">${fx(r.AF, 3)}</td><td class="n" data-l="precision ">${fx(r.reward_precision, 3)}</td><td class="n m" data-l="train s ">${fx(r.train_s, 0)}</td>
+<td class="m">${a(r.pr, prName(r.pr || ""))}</td><td class="m">${a(r.checkpoints, "hf")}</td></tr>`).join("");
+}
+
+function chart(rows) {
+  const svg = $("#chart"), recs = rows.filter(r => r.n && r.gFVD != null).sort((p, q) => t(p.date) - t(q.date));
+  if (!recs.length) return;
+  const W = svg.clientWidth, H = 170, L = 30, R = 46, T = 12, B = 24, day = 864e5;
+  const x0 = t(recs[0].date), x1 = Math.max(Date.now(), t(recs.at(-1).date) + day);
+  const vs = recs.map(r => r.gFVD), lo = Math.min(...vs), hi = Math.max(...vs), pad = Math.max((hi - lo) * .2, lo * .1);
+  const y0 = lo - pad, y1 = hi + pad, X = d => L + (d - x0) / (x1 - x0) * (W - L - R), Y = v => T + (y1 - v) / (y1 - y0) * (H - T - B);
+  const m = 10 ** Math.floor(Math.log10((y1 - y0) / 3)), step = [1, 2, 5, 10].map(k => k * m).find(k => k >= (y1 - y0) / 3);
+  const date = d => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  let s = "";
+  for (let v = Math.ceil(y0 / step) * step; v <= y1; v += step)
+    s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axis" x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${+v.toFixed(3)}</text>`;
+  s += `<text class="axis" x="${L}" y="${H - 6}">${date(x0)}</text><text class="axis" x="${W - R}" y="${H - 6}" text-anchor="end">${date(x1)}</text>`;
+  s += `<path class="step" d="M${recs.map((r, i) => (i ? `H${X(t(r.date))}V` : `${X(t(r.date))},`) + Y(r.gFVD)).join("")}H${W - R}"/>`;
+  s += `<text class="val" x="${W - R + 6}" y="${Y(recs.at(-1).gFVD) + 4}">${fx(recs.at(-1).gFVD, 1)}</text>`;
+  s += recs.map(r => `<a href="${url(r.pr) || "#"}"><circle class="pt" cx="${X(t(r.date))}" cy="${Y(r.gFVD)}" r="5"/><circle class="hit" cx="${X(t(r.date))}" cy="${Y(r.gFVD)}" r="14"><title>#${r.n} ${esc(r.date)}  gFVD ${fx(r.gFVD, 1)} ± ${fx(r.gFVD_sd, 1)}  ${esc(r.change)}</title></circle></a>`).join("");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+}
+
+fetch("records.jsonl").then(r => r.ok ? r.text() : Promise.reject(r.status)).then(text => {
+  const rows = text.split("\n").filter(l => l.trim()).map(l => JSON.parse(l)).sort((p, q) => (q.n || 0) - (p.n || 0) || t(q.date) - t(p.date));
+  table(rows); chart(rows);
+  addEventListener("resize", () => chart(rows));
+}).catch(() => { $("#lb tbody").innerHTML = `<tr><td colspan="10">Could not load <a href="records.jsonl">records.jsonl</a>.</td></tr>`; });
+</script>
+</body></html>

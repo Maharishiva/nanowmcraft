@@ -9,7 +9,7 @@ The current record and every earlier one are on the [leaderboard](https://mahari
 
 - **Data.** Train only on `data/train.npz`, at most 500k transitions. No other data, no pretrained weights.
 - **Training.** At most 600 s per run on one A100 40GB: data loading, tokenizer, compilation, everything. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint.
-- **Evaluation.** `eval.py` stays byte-identical to `main`. The whole eval run, model loading and compilation included, takes at most 180 s on the same GPU (`eval_s` in the ledger row; the record takes about 145 s). Anything else about generation is yours: the model family, the sampler, the number of steps.
+- **Evaluation.** `eval.py` stays byte-identical to `main`. The whole eval run, model loading and compilation included, takes at most 180 s on the same GPU (`eval_s` in the ledger row; the record takes about 155 s). Anything else about generation is yours: the model family, the sampler, the number of steps.
 - **One frame per action.** The model generates frame by frame and never sees future actions. The interface below enforces this.
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
 - **Gates.** Both measured in the maintainer's rerun, on the same machine and seeds:
