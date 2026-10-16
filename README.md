@@ -50,6 +50,7 @@ It is also an open speedrun: lower the generation error (gFVD) in one 10-minute 
 | 1 | 2026-10-15 | hybrid tile tokenizer, Pallas kernels, Muon, reward and termination heads | 14.7 ± 1.9 | 0.929 | 0.897 | 581 s | [seeds 0, 1, 2](https://huggingface.co/maharishiva/tinywmcraft) |
 
 gFVD is shown times 10^4. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`.
+The baseline, row 0 of the leaderboard, is [train_tiny.py](train_tiny.py): 17.0 ± 0.5 ([numbers](validation/train_tiny_20261016.md)).
 All records with their pull requests: [leaderboard](https://maharishiva.github.io/tinywmcraft/#leaderboard). Per-seed rows: [validation/colab_20261015.md](validation/colab_20261015.md).
 
 Every experiment of the research so far, as a dot over time, with the accepted recipe as the falling line ([interactive version](https://maharishiva.github.io/tinywmcraft/progress.html)):
@@ -85,7 +86,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # fro
 - **Compute:** at most 600 s per training run on one A100 40GB, everything included, with no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical and its timed part (`eval_s`: importing and loading your model, compiling, generating) takes at most 180 s on the same GPU. Any model and any sampler, as long as it generates one frame per action without seeing future actions.
 - **Seeds:** report training seeds 0, 1 and 2.
-- **Gates:** the mean gFVD beats the record by a noise-aware margin; AF and every reward and termination metric stay within 2% of the record.
+- **Gates:** the mean gFVD beats the record by a noise-aware margin; AF and every reward and termination metric stay above fixed floors, 95% of the `train_tiny.py` baseline. Records are ranked on gFVD alone.
 
 Details, the model interface and how to submit: [program.md](program.md).
 

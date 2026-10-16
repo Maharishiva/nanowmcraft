@@ -72,6 +72,7 @@ td.ch { min-width:20ch; } td.m { white-space:nowrap; }
 .sd { color:var(--mid); }
 tr.rec .g { color:var(--o); }
 tr.base td { color:var(--dim); } tr.base a { color:#b05a26; }
+#chart .pt.base { fill:var(--dim); }
 .refs a { white-space:nowrap; }
 footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; border-top:1px solid var(--line); }
 @media (max-width:560px) {
@@ -165,13 +166,13 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <p class="note">Each arrow is a hard requirement in the game code. Tools are unlocks, not ingredients: a pickaxe lets you mine the next material. Iron tools need iron, coal, a furnace and a table nearby. The dim ones on the right can happen any time.</p>
 
 <h2 id="leaderboard">leaderboard</h2>
-<p>Record gFVD over time. Lower is better; each point links to its pull request. Beat it with a pull request on <a href="https://github.com/Maharishiva/tinywmcraft">GitHub</a>.</p>
+<p>Record gFVD, from the baseline on. Lower is better; each point links to its pull request. Beat it with a pull request on <a href="https://github.com/Maharishiva/tinywmcraft">GitHub</a>.</p>
 <svg id="chart" role="img" aria-label="Record gFVD over time"></svg>
 <div class="scroll"><table id="lb">
 <thead><tr><th class="n">#</th><th>date</th><th>author</th><th>change</th><th class="n">gFVD ↓</th><th class="n">AF ↑</th><th class="n">reward<br>precision ↑</th><th class="n">train s</th><th>code</th><th>weights</th></tr></thead>
 <tbody><tr><td colspan="10">loading records.jsonl…</td></tr></tbody>
 </table></div>
-<p class="note">gFVD is shown ×10⁴ everywhere, so 14.7 means 0.00147. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold and scored by eval.py on a Colab A100. Train s is the slowest seed. Dim rows are the <a href="train_tiny.html">train_tiny.py</a> baseline. Data: <a href="records.jsonl">records.jsonl</a>.</p>
+<p class="note">gFVD is shown ×10⁴ everywhere, so 14.7 means 0.00147. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold and scored by eval.py on a Colab A100. Train s is the slowest seed. Row 0, dim, is the <a href="train_tiny.html">train_tiny.py</a> baseline. Data: <a href="records.jsonl">records.jsonl</a>.</p>
 
 <h2 id="speedrun">the speedrun</h2>
 <p>Beat the record gFVD in one 600-second A100 run.</p>
@@ -180,7 +181,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
 <dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating must take at most 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
-<dt>gates</dt><dd>gFVD beats the record by a noise-aware margin. AF and every head metric stay within 2% of the record.</dd>
+<dt>gates</dt><dd>gFVD beats the record by a noise-aware margin. AF and every head metric stay above fixed floors, 95% of the train_tiny.py baseline. Records are ranked on gFVD alone.</dd>
 </dl>
 <p>To submit:</p>
 <ol>
@@ -223,7 +224,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const url = u => /^https:\/\//.test(u || "") ? esc(u) : "";
-const fx = (v, d) => v == null ? "–" : (+v).toFixed(d);
+const fx = (v, d) => v == null ? "–" : (+v + 1e-9).toFixed(d);   // half up: 16.95 is 17.0
 const t = d => Date.parse(d);
 const prName = u => (u.match(/\/pull\/(\d+)/) || [])[1] ? "#" + u.match(/\/pull\/(\d+)/)[1] : (u.match(/\/commit\/(\w{7})/) || [, "link"])[1];
 const a = (u, text) => url(u) ? `<a href="${url(u)}">${esc(text)}</a>` : "–";
@@ -231,28 +232,29 @@ const a = (u, text) => url(u) ? `<a href="${url(u)}">${esc(text)}</a>` : "–";
 function table(rows) {
   const top = Math.max(...rows.map(r => r.n));
   $("#lb tbody").innerHTML = rows.map(r => `<tr class="${r.n ? (r.n === top ? "rec" : "") : "base"}">
-<td class="n" data-l="${r.n ? "#" : ""}">${r.n || "base"}</td><td class="m">${esc(r.date)}</td><td class="m">${a("https://github.com/" + encodeURIComponent(r.author || ""), r.author)}</td>
+<td class="n" data-l="#">${r.n ?? 0}</td><td class="m">${esc(r.date)}</td><td class="m">${a("https://github.com/" + encodeURIComponent(r.author || ""), r.author)}</td>
 <td class="ch">${esc(r.change)}</td><td class="n"><span class="g">${fx(r.gFVD, 1)}</span> <span class="sd">± ${fx(r.gFVD_sd, 1)}</span></td>
 <td class="n" data-l="AF ">${fx(r.AF, 3)}</td><td class="n" data-l="precision ">${fx(r.reward_precision, 3)}</td><td class="n m" data-l="train s ">${fx(r.train_s, 0)}</td>
 <td class="m">${a(r.pr, prName(r.pr || ""))}</td><td class="m">${a(r.checkpoints, "hf")}</td></tr>`).join("");
 }
 
-function chart(rows) {
-  const svg = $("#chart"), recs = rows.filter(r => r.n && r.gFVD != null).sort((p, q) => t(p.date) - t(q.date));
+function chart(rows) {  // records in order, the baseline (n 0) first and dim; each point links to its pull request
+  const svg = $("#chart"), recs = rows.filter(r => r.gFVD != null).sort((p, q) => p.n - q.n);
   if (!recs.length) return;
-  const W = svg.clientWidth, H = 170, L = 30, R = 46, T = 12, B = 24, day = 864e5;
-  const x0 = t(recs[0].date), x1 = Math.max(Date.now(), t(recs.at(-1).date) + day);
+  const W = svg.clientWidth, H = 170, L = 30, R = 46, T = 12, B = 24;
+  const gap = Math.min(180, (W - L - R - 60) / Math.max(recs.length - 1, 1)), X = i => L + 30 + i * gap;
   const vs = recs.map(r => r.gFVD), lo = Math.min(...vs), hi = Math.max(...vs), pad = Math.max((hi - lo) * .2, lo * .1);
-  const y0 = lo - pad, y1 = hi + pad, X = d => L + (d - x0) / (x1 - x0) * (W - L - R), Y = v => T + (y1 - v) / (y1 - y0) * (H - T - B);
+  const y0 = lo - pad, y1 = hi + pad, Y = v => T + (y1 - v) / (y1 - y0) * (H - T - B);
   const m = 10 ** Math.floor(Math.log10((y1 - y0) / 3)), step = [1, 2, 5, 10].map(k => k * m).find(k => k >= (y1 - y0) / 3);
   const date = d => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
   let s = "";
   for (let v = Math.ceil(y0 / step) * step; v <= y1; v += step)
     s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axis" x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${+v.toFixed(3)}</text>`;
-  s += `<text class="axis" x="${L}" y="${H - 6}">${date(x0)}</text><text class="axis" x="${W - R}" y="${H - 6}" text-anchor="end">${date(x1)}</text>`;
-  s += `<path class="step" d="M${recs.map((r, i) => (i ? `H${X(t(r.date))}V` : `${X(t(r.date))},`) + Y(r.gFVD)).join("")}H${W - R}"/>`;
+  s += `<path class="step" d="M${recs.map((r, i) => (i ? `H${X(i)}V` : `${X(i)},`) + Y(r.gFVD)).join("")}H${W - R}"/>`;
   s += `<text class="val" x="${W - R + 6}" y="${Y(recs.at(-1).gFVD) + 4}">${fx(recs.at(-1).gFVD, 1)}</text>`;
-  s += recs.map(r => `<a href="${url(r.pr) || "#"}"><circle class="pt" cx="${X(t(r.date))}" cy="${Y(r.gFVD)}" r="5"/><circle class="hit" cx="${X(t(r.date))}" cy="${Y(r.gFVD)}" r="14"><title>#${r.n} ${esc(r.date)}  gFVD ${fx(r.gFVD, 1)} ± ${fx(r.gFVD_sd, 1)}  ${esc(r.change)}</title></circle></a>`).join("");
+  s += recs.map((r, i) => `<text class="axis" x="${X(i)}" y="${H - 6}" text-anchor="middle">${r.n ? "#" + r.n : "baseline"} · ${date(r.date)}</text>` +
+    `<a href="${url(r.pr) || "#"}"><circle class="pt${r.n ? "" : " base"}" cx="${X(i)}" cy="${Y(r.gFVD)}" r="5"/><circle class="hit" cx="${X(i)}" cy="${Y(r.gFVD)}" r="14">` +
+    `<title>#${r.n} ${esc(r.date)}  gFVD ${fx(r.gFVD, 1)} ± ${fx(r.gFVD_sd, 1)}  ${esc(r.change)}</title></circle></a>`).join("");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = s;
 }

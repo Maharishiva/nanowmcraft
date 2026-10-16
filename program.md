@@ -12,9 +12,14 @@ The current record and every earlier one are on the [leaderboard](https://mahari
 - **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 180 s on the same GPU; the record takes about 155 s. Anything else about generation is yours: the model family, the sampler, the number of steps.
 - **One frame per action.** The model generates frame by frame and never sees future actions or frames. The interface below hands it one action at a time; reading the eval data, caching frames across calls or other tricks around it are against the rules and checked in review.
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
-- **Gates.** Both measured in the maintainer's rerun, on the same machine and seeds:
+- **Gates.** Measured in the maintainer's rerun, on the same machine and seeds. Records are ranked on gFVD alone:
   - gFVD: the record's mean minus the new mean must exceed `1.65 * sqrt((sd_record^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. With the current record (sd 1.9) and a new recipe of sd 1.0, the new mean must be below about 12.6. Stable recipes need a smaller margin.
-  - AF and every reward and termination metric in the ledger row: the new mean at least 98% of the record's mean.
+  - AF and every reward and termination metric: the new three-seed mean stays at or above a fixed floor, 95% of the `train_tiny.py` baseline's mean. The floors do not move when the record changes:
+
+| AF | reward_corr | reward_recall | reward_precision | reward_ap | done_auc | imagined_reward_corr | imagined_return_corr | imagined_done_auc |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.875 | 0.884 | 0.931 | 0.837 | 0.892 | 0.931 | 0.566 | 0.753 | 0.789 |
+
 
 One run is noisy: seeds 0, 1 and 2 of the record score 13.5, 16.9 and 13.7. Compare three-seed means, never single runs.
 
