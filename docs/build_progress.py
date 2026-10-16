@@ -166,7 +166,9 @@ rect:hover {{ opacity:1; stroke:var(--fg); stroke-width:1.5; cursor:crosshair; }
 #tip {{ position:fixed; display:none; background:#111; border:1px solid var(--o); padding:8px 10px; white-space:pre; pointer-events:none; font-size:12px; z-index:2; }}
 .foot {{ color:var(--dim); margin-top:30px; }}
 a {{ color:var(--o); }}
+.top {{ display:flex; gap:22px; margin-bottom:22px; }}
 </style></head><body><main>
+<nav class="top"><a href="./">&larr; tinywmcraft: play it in your browser</a><a href="https://github.com/Maharishiva/tinywmcraft">github</a></nav>
 {banner}
 <p class="sub"><b>gFVD over time.</b> Every dot is one training run scored by the frozen evaluator: 2048 windows, 8 real context frames, 16 generated frames, 8 Euler steps.
 Budget: one A100, 10 minutes cold, compilation included. Data: 500k Craftax-Classic transitions.</p>
