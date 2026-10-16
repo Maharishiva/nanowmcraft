@@ -36,7 +36,7 @@ root.innerHTML = `<div class="screen"><canvas width="63" height="${H}"></canvas>
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const acts = root.querySelector('.acts'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, starts, z, tau, act, frames = [], busy = false, dead = false, visible = false;
+let session, starts, z, tau, act, frames = [], score = 0, busy = false, dead = false;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 
@@ -54,7 +54,7 @@ function text(s, x, y, color) {
   }
 }
 
-function board(a) {  // the keys under the frame, the pressed one in orange
+function board(a, r = 0) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
   ctx.fillStyle = BG;
   ctx.fillRect(0, 63, 63, H - 63);
   const other = a !== undefined && !BOARD.some(b => b[0] === a);
@@ -66,14 +66,21 @@ function board(a) {  // the keys under the frame, the pressed one in orange
     ctx.fillRect(x + 5, y + 67, w - 2, 7);
     text(cap, x + 4 + ((w - 4 * cap.length + 1) >> 1), y + 68, on ? BG : CAP);
   }
+  const fill = Math.round(7 * Math.min(Math.max(r, 0), 1));
+  ctx.fillStyle = EDGE;
+  ctx.fillRect(53, 66, 9, 9);
+  ctx.fillStyle = KEY;
+  ctx.fillRect(54, 67, 7, 7);
+  ctx.fillStyle = r > 0.5 ? ORANGE : CAP;
+  ctx.fillRect(54, 74 - fill, 7, fill);
 }
 
-function draw(rgb, a, plus) {  // the frame, the +1 of a reward, the keys; recorded for the clip
+function draw(rgb, a, r = 0) {  // the frame, a +1 for a predicted reward over 0.5, the keys; recorded for the clip
   const img = ctx.createImageData(63, 63);
   for (let i = 0; i < 63 * 63; i++) img.data.set([rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2], 255], 4 * i);
   ctx.putImageData(img, 0, 0);
-  if (plus) text('+1', 55, 1, FG);
-  board(a);
+  if (r > 0.5) text('+1', 55, 1, FG);
+  board(a, r);
   frames.push(ctx.getImageData(0, 0, 63, H));
   if (frames.length > CLIP) frames.shift();
 }
@@ -95,6 +102,7 @@ function reset() {  // a random real start: 31 clean latents with their incoming
   act = new Int32Array(32);
   act.set(starts.acts.subarray(k * 31, k * 31 + 31));
   frames = [];
+  score = 0;
   dead = false;
   msg.textContent = '';
   draw(starts.rgb.subarray(k * RGB, (k + 1) * RGB));
@@ -120,9 +128,11 @@ async function step(a) {
   tau[30] = 0.9;
   act.copyWithin(0, 1);
   dead = o.done.data[0] > DONE_THRESHOLD;
-  draw(o.rgb.data, a, o.reward.data[0] > 0.5);
-  status(`${NAMES[a]}, frame ${frames.length - 1}, ${Math.round(performance.now() - t0)} ms on your GPU`);
-  if (dead) msg.innerHTML = '<b>dead</b><button class="hot" data-a="save">save clip</button>' +
+  const r = o.reward.data[0];
+  score += r > 0.5;
+  draw(o.rgb.data, a, r);
+  status(`score ${score}, ${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
+  if (dead) msg.innerHTML = `<b>dead, score ${score}</b><button class="hot" data-a="save">save clip</button>` +
     '<button data-a="reset">new world</button>';
   busy = false;
 }
@@ -190,11 +200,11 @@ root.onclick = e => {
 };
 addEventListener('keydown', e => {
   const a = e.code in ARROWS ? ARROWS[e.code] : CODES.indexOf(e.code);
+  const r = root.getBoundingClientRect(), visible = r.bottom > innerHeight / 3 && r.top < innerHeight * 2 / 3;
   if (!visible || e.ctrlKey || e.metaKey || e.altKey || (a < 0 && e.code !== 'Backspace')) return;
   e.preventDefault();
   press(a < 0 ? 'reset' : a);
 });
-new IntersectionObserver(([e]) => { visible = e.intersectionRatio >= 0.3; }, { threshold: [0, 0.3] }).observe(root);
 addEventListener('resize', fit);
 fit();
 if (navigator.gpu) main().catch(fail);

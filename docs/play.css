@@ -19,7 +19,7 @@
 #play button:active { background: #3a3a3e; }
 #play .msg button { padding: 0 24px; }
 #play .msg .hot { background: #ff6a13; border-color: #ff6a13; color: #0a0a0a; }
-#play img { width: 32px; height: 32px; image-rendering: pixelated; }
+#play img { width: 35px; height: 35px; image-rendering: pixelated; }
 #play small { font-size: 9px; line-height: 1; color: #6a6a6a; }
 @media (hover: hover) { #play button:hover { border-color: #ff6a13; } }
 @media (hover: none) { #play small { display: none; } }
