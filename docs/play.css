@@ -8,7 +8,9 @@
   background: #0a0a0add; }
 #play .msg:empty { display: none; }
 #play .msg b { font-size: 16px; font-weight: normal; }
-#play .msg .big { font-size: 32px; color: #ff6a13; }
+#play .msg:has(.end) { justify-content: flex-end; background: none; }
+#play .end { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+#play .end button { padding: 0 16px; }
 #play .msg span { color: #8a8a8a; font-size: 11px; }
 #play .prog { width: 70%; height: 10px; padding: 2px; border: 2px solid #3a3a3e; }
 #play .prog i { display: block; height: 100%; background: #ff6a13; }

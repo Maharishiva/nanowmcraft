@@ -6,7 +6,8 @@ const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 const q = new URLSearchParams(location.search);
-const MODEL = q.get('model') ?? 'https://huggingface.co/maharishiva/tinywmcraft/resolve/main/web/play.onnx';
+const MODEL = q.get('model') ??   // a pinned revision, so the copy kept in the browser's cache stays valid
+  'https://huggingface.co/maharishiva/tinywmcraft/resolve/8346c17f18c91ad577f9b7f1227fb7c614d4a432/web/play.onnx';
 const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const CLIP = 300, MAX_SCALE = 7;              // frames kept for the clip, largest pixel scale
@@ -39,8 +40,8 @@ const FILES = !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: '
 
 const root = document.getElementById('play');
 root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${H}"></canvas><div class="msg"></div></div>
-<div class="bar"><span class="st"></span><button data-a="reset">new world</button><button data-a="save">save clip</button>
-<button data-a="share">share</button></div></div>
+<div class="bar"><span class="st"></span><button data-a="save">save clip</button><button data-a="share">share</button>
+<button data-a="reset">new world</button></div></div>
 <div class="acts">${ICONS.map(a => `<button data-a="${a}" title="${NAMES[a]}">` +
   `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}"><img class="k" src="${label(CAPS[a])}" alt=""></button>`).join('')}</div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
@@ -79,12 +80,12 @@ function label(s) {  // a key name in the pixel font, as an image for the button
   return c.toDataURL();
 }
 
-function head(hot) {  // the score and the best score (DEAD once the episode is over)
+function head(hot) {  // the score and the best score
   ctx.fillStyle = BG;
   ctx.fillRect(0, 0, 63, TOP);
   text(String(score), text('SCORE', 2, 1, CAP) + 2, 1, hot ? ORANGE : FG);
-  const right = dead ? 'DEAD' : `HI ${best}`;
-  text(right, 62 - 4 * right.length, 1, dead ? ORANGE : CAP);
+  const right = `HI ${best}`;
+  text(right, 62 - 4 * right.length, 1, CAP);
 }
 
 function board(a, r = 0) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
@@ -119,6 +120,21 @@ function draw(rgb, a, r = 0) {  // the score, the frame with a +1 for a predicte
   tick++;
   frames.push(ctx.getImageData(0, 0, 63, H));
   if (frames.length > CLIP) frames.shift();
+}
+
+function wasted() {  // the death screen: the frame washed red, DEAD and the score; it replaces the last frame, so it ends the clip
+  const img = ctx.getImageData(0, TOP, 63, 63), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const y = 0.3 * d[i] + 0.59 * d[i + 1] + 0.11 * d[i + 2];
+    [d[i], d[i + 1], d[i + 2]] = [70 + 0.7 * y, 0.18 * y, 0.18 * y];
+  }
+  ctx.putImageData(img, 0, TOP);
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.6)';
+  ctx.fillRect(0, TOP + 15, 63, 31);
+  text('DEAD', 9, TOP + 18, FG, ctx, 3);
+  const n = String(score), w = 4 * 'SCORE '.length + 8 * n.length - 2;
+  text(n, text('SCORE ', (63 - w) >> 1, TOP + 39, CAP), TOP + 36, ORANGE, ctx, 2);
+  frames[frames.length - 1] = ctx.getImageData(0, 0, 63, H);
 }
 
 const gauss = n => {  // standard normal, Box-Muller
@@ -174,8 +190,9 @@ async function step(a) {  // results of a step started before a reset are droppe
     draw(o.rgb.data, a, r);
     status(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
     if (!dead) return;
-    msg.innerHTML = `<span>dead</span><b class="big">score ${score}</b><span>${score && score === best ? 'your best' : `best ${best}`}</span>` +
-      '<button class="hot" data-a="share">share</button><button data-a="save">save clip</button><button data-a="reset">new world</button>';
+    wasted();
+    msg.innerHTML = '<div class="end"><button data-a="save">save clip</button><button class="hot" data-a="share">share</button>' +
+      '<button data-a="reset">new world</button></div>';
     clip().catch(() => {});   // encoded now, so share opens at once
   } finally {
     busy = false;
@@ -258,7 +275,9 @@ function loading(what, frac, note) {  // the screen over the game until it plays
     `<span>${note}</span>`;
 }
 
-async function load(url, what) {  // fetch with a progress bar
+async function load(url, what, keep) {  // fetch with a progress bar; keep: from and into the browser's cache
+  const box = keep && await self.caches?.open('tinywmcraft').catch(() => null), hit = await box?.match(url);
+  if (hit) return new Uint8Array(await hit.arrayBuffer());
   loading(`loading the ${what}`, 0, 'connecting');
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
@@ -271,7 +290,12 @@ async function load(url, what) {  // fetch with a progress bar
     got += value.length;
     loading(`loading the ${what}`, got / total, `${(got / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB, then it runs on your GPU`);
   }
-  return new Uint8Array(await new Blob(parts).arrayBuffer());
+  const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+  if (box) {   // the next visit loads it from here; older versions go
+    for (const k of await box.keys()) if (k.url !== url) await box.delete(k);
+    await box.put(url, new Response(bytes)).catch(() => {});
+  }
+  return bytes;
 }
 
 async function main() {
@@ -279,7 +303,7 @@ async function main() {
   starts = { n, lat: new Float32Array(b.buffer, 4, n * L), acts: b.subarray(4 + 4 * n * L, 4 + 4 * n * L + 31 * n) };
   starts.rgb = b.subarray(4 + 4 * n * L + 31 * n);
   reset();
-  const model = await load(MODEL, 'world model');
+  const model = await load(MODEL, 'world model', true);
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
   const s = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'], logSeverityLevel: 3 });
   await s.run(feeds());   // warm-up: compiles the shaders before the first keypress

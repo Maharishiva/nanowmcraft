@@ -47,6 +47,8 @@ b { font-weight:700; }
 .links a::before { content:"→ "; color:var(--dim); }
 figure { margin:22px 0; }
 figure img { display:block; max-width:100%; height:auto; margin:0 auto; }
+figure.wide img { width:min(135%, calc(100vw - 32px)); max-width:none; margin-left:50%; transform:translateX(-50%); }
+img.ico { display:inline; width:21px; height:21px; vertical-align:-5px; image-rendering:pixelated; }
 img.px { image-rendering:pixelated; }
 .tree { display:block; min-width:640px; width:100%; height:auto; margin:14px 0 6px; font-size:10.5px; }
 .tree image { image-rendering:pixelated; }
@@ -111,12 +113,12 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <a href="progress.html">research log</a>
 </nav>
 
-<h2 id="what">what is this</h2>
-<p><a href="https://github.com/MichaelTMatthews/Craftax">Craftax-Classic</a> is a fast 2D take on Minecraft: walk, chop trees, craft tools, stay alive. A frozen pretrained agent played it at mid-game skill and recorded 500k transitions: the frame, the key, the reward and whether the episode ended.</p>
-<p>tinywmcraft learns the game from that and nothing else. No game state, tile labels or pretrained features go in. Given a few frames and a key, it generates the next frame, the reward and whether the episode ends. Feed its own frames back in and you can play inside it. That loop is the player above.</p>
-<p>The model has <b>13.9M parameters</b>: 5.2M in the tokenizer, 8.6M in the world model. A cold training run plus the eval is <b>about 12 minutes of one A100, about $0.1</b> of Colab compute.</p>
+<h2 id="what">how it works?</h2>
+<p><a href="https://github.com/MichaelTMatthews/Craftax">Craftax-Classic</a> is a fast 2D take on Minecraft: walk, chop trees, craft, fight mobs, get a diamond <img class="ico" src="icons/diamond.png" alt=""> and stay alive! A frozen pretrained RL agent collected 500k frame transitions.</p>
+<p>Then tinywmcraft learns a neural network world model of the game. Given a history of frames and an action, it generates the next frame, the reward and whether the episode ends. Feed its own frames back in and you can play inside it!</p>
+<p>The model has <b>13.9M parameters</b>: 5.2M in the tokenizer, 8.6M in the world model. A cold training run plus the eval is <b>about 12 minutes end to end on a single A100, about $0.1</b> of Colab compute.</p>
 
-<figure><img class="px" src="assets/architecture.gif" alt="Frames go through the encoder to 4×4×32 latents, the world model denoises the newest latent in eight steps conditioned on the key, and the decoder shows the frame at every step" width="1200" height="400"><figcaption>What runs on every keypress. No game engine and no game state: the encoder turns past frames into 4×4×32 latents, the world model denoises the next latent in eight steps conditioned on your key, and the decoder draws it.</figcaption></figure>
+<figure class="wide"><img class="px" src="assets/architecture.gif" alt="Frames go through the encoder to 4×4×32 latents, the world model denoises the newest latent in eight steps conditioned on the key, and the decoder shows the frame at every step" width="1200" height="400"><figcaption>What runs on every keypress. No game engine and no game state: the encoder turns past frames into 4×4×32 latents, the world model denoises the next latent in eight steps conditioned on your key, and the decoder draws it.</figcaption></figure>
 
 <h2 id="achievements">what there is to do</h2>
 <p>Craftax-Classic has 22 achievements. The first unlock of each is worth +1 reward, and the world model has to predict it from pixels: that is the square and the +1 in the player. The score counts them.</p>
@@ -197,7 +199,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <p class="links"><a href="progress.html">every run as a dot: research log</a></p>
 <!-- /STORY -->
 
-<h2 id="how">how it works</h2>
+<h2 id="how">inside the model</h2>
 <p><b>Tokenizer.</b> A 63×63 frame becomes a 4×4×32 latent. The 81 tiles of 7×7 pixels are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks. The decoder mirrors it. Training mixes clean, half-masked and noised frames and always reconstructs the clean one.</p>
 <p><b>World model.</b> Six transformer blocks of width 256 alternate spatial attention over the 16 latent tokens with causal attention across 32 frames. The action and each frame's noise level condition adaLN-zero blocks. Flow matching predicts the clean latent, and eight Euler steps generate each frame.</p>
 <p><b>Heads.</b> A reward head (two-hot over 255 symlog bins) and a termination head read each frame's mean token, so the model returns frames, rewards and episode ends.</p>
