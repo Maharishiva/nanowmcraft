@@ -10,7 +10,7 @@ const MODEL = q.get('model') ??   // a pinned revision, so the copy kept in the 
   'https://huggingface.co/maharishiva/tinywmcraft/resolve/9506e7a22705ae7f45e8edaee7336d036dd8ed31/web/play.onnx';
 const STARTS = q.get('starts') ?? 'starts.bin';
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
-const CLIP = 300, MAX_SCALE = 7;              // frames kept for the clip, largest pixel scale
+const CLIP = 5000, MAX_SCALE = 7;             // moves kept for the clip (about 14 KB each), largest pixel scale
 const L = 31 * 512, RGB = 63 * 63 * 3;        // one 31-frame latent window, one frame
 const TOP = 7, H = TOP + 88, MAP = 49;        // canvas: the score strip, the frame, the keys; the map part of the frame
 const BG = '#0a0a0a', FG = '#f0f0ee', ORANGE = '#ff6a13', KEY = '#1c1c1e', EDGE = '#3a3a3e', CAP = '#aaaaa8';
@@ -81,59 +81,64 @@ function label(s) {  // a key name in the pixel font, as an image for the button
   return c.toDataURL();
 }
 
-function head(hot) {  // the score and the best score
-  ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, 63, TOP);
-  text(String(score), text('SCORE', 2, 1, CAP) + 2, 1, hot ? ORANGE : FG);
-  const right = `HI ${best}`;
-  text(right, 62 - 4 * right.length, 1, CAP);
+function head(c, f) {  // the score and the best score
+  c.fillStyle = BG;
+  c.fillRect(0, 0, 63, TOP);
+  text(String(f.score), text('SCORE', 2, 1, CAP, c) + 2, 1, f.r > 0.5 ? ORANGE : FG, c);
+  const right = `HI ${f.best}`;
+  text(right, 62 - 4 * right.length, 1, CAP, c);
 }
 
-function board(a, r = 0) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
+function board(c, a, r) {  // the keys under the frame, the pressed one in orange; a square filled by the reward
   const y0 = TOP + 66;
-  ctx.fillStyle = BG;
-  ctx.fillRect(0, TOP + 63, 63, 25);
+  c.fillStyle = BG;
+  c.fillRect(0, TOP + 63, 63, 25);
   const other = a !== undefined && !BOARD.some(b => b[0] === a);
   for (const [k, x, y, w] of BOARD) {
     const on = k < 0 ? other : k === a, cap = k < 0 ? (other ? CAPS[a] : '') : CAPS[k];
-    ctx.fillStyle = on ? ORANGE : EDGE;
-    ctx.fillRect(x + 4, y + y0, w, 9);
-    ctx.fillStyle = on ? ORANGE : KEY;
-    ctx.fillRect(x + 5, y + y0 + 1, w - 2, 7);
-    text(cap, x + 4 + ((w - 4 * cap.length + 1) >> 1), y + y0 + 2, on ? BG : CAP);
+    c.fillStyle = on ? ORANGE : EDGE;
+    c.fillRect(x + 4, y + y0, w, 9);
+    c.fillStyle = on ? ORANGE : KEY;
+    c.fillRect(x + 5, y + y0 + 1, w - 2, 7);
+    text(cap, x + 4 + ((w - 4 * cap.length + 1) >> 1), y + y0 + 2, on ? BG : CAP, c);
   }
   const fill = Math.round(7 * Math.min(Math.max(r, 0), 1));
-  ctx.fillStyle = EDGE;
-  ctx.fillRect(53, y0, 9, 9);
-  ctx.fillStyle = KEY;
-  ctx.fillRect(54, y0 + 1, 7, 7);
-  ctx.fillStyle = r > 0.5 ? ORANGE : CAP;
-  ctx.fillRect(54, y0 + 8 - fill, 7, fill);
+  c.fillStyle = EDGE;
+  c.fillRect(53, y0, 9, 9);
+  c.fillStyle = KEY;
+  c.fillRect(54, y0 + 1, 7, 7);
+  c.fillStyle = r > 0.5 ? ORANGE : CAP;
+  c.fillRect(54, y0 + 8 - fill, 7, fill);
 }
 
-function draw(rgb, a, r = 0) {  // the score, the frame with a +1 for a predicted reward over 0.5, the keys; kept for the clip
-  const img = ctx.createImageData(63, 63);
-  for (let i = 0; i < 63 * 63; i++) img.data.set([rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2], 255], 4 * i);
-  ctx.putImageData(img, 0, TOP);
-  if (r > 0.5) text('+1', 55, TOP + 1, FG);
-  head(r > 0.5);
-  board(a, r);
-  tick++;
-  frames.push(ctx.getImageData(0, 0, 63, H));
-  if (frames.length > CLIP) frames.shift();
-}
-
-function wasted() {  // Minecraft's death screen: its red gradient over the frame, DEAD! and the score; the clip ends on it
-  const g = ctx.createLinearGradient(0, TOP, 0, TOP + 63);
+function wasted(c, score) {  // Minecraft's death screen: its red gradient over the frame, DEAD! and the score
+  const g = c.createLinearGradient(0, TOP, 0, TOP + 63);
   g.addColorStop(0, 'rgba(150, 20, 20, 0.42)');
   g.addColorStop(1, 'rgba(128, 40, 40, 0.6)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, TOP, 63, 63);
-  const shadowed = (s, x, y, color, u = 1) => (text(s, x + 1, y + 1, 'rgba(40, 0, 0, 0.6)', ctx, u), text(s, x, y, color, ctx, u));
+  c.fillStyle = g;
+  c.fillRect(0, TOP, 63, 63);
+  const shadowed = (s, x, y, color, u = 1) => (text(s, x + 1, y + 1, 'rgba(40, 0, 0, 0.6)', c, u), text(s, x, y, color, c, u));
   shadowed('DEAD!', 12, TOP + 10, FG, 2);
   const n = String(score), x = (63 - 24 - 4 * n.length + 1) >> 1;
   shadowed(n, shadowed('SCORE ', x, TOP + 24, FG), TOP + 24, ORANGE);
-  frames[frames.length - 1] = ctx.getImageData(0, 0, 63, H);
+}
+
+function paint(c, f) {  // one move: the score, the frame with a +1 for a predicted reward over 0.5, the keys, the death screen
+  const img = c.createImageData(63, 63);
+  for (let i = 0; i < 63 * 63; i++) img.data.set([f.rgb[3 * i], f.rgb[3 * i + 1], f.rgb[3 * i + 2], 255], 4 * i);
+  c.putImageData(img, 0, TOP);
+  if (f.r > 0.5) text('+1', 55, TOP + 1, FG, c);
+  head(c, f);
+  board(c, f.a, f.r);
+  if (f.dead) wasted(c, f.score);
+}
+
+function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the frame, key and reward, not the pixels drawn
+  const f = { rgb, a, r, score, best, dead };
+  paint(ctx, f);
+  tick++;
+  frames.push(f);
+  if (frames.length > CLIP) frames.shift();
 }
 
 const gauss = n => {  // standard normal, Box-Muller
@@ -232,7 +237,6 @@ async function step(a) {  // results of a step started before a reset are droppe
     draw(o.rgb, a, r);
     status(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
     if (!dead) return;
-    wasted();
     msg.innerHTML = '<div class="end"><button data-a="save">save clip</button><button class="hot" data-a="share">share</button>' +
       '<button data-a="reset">new world</button></div>';
     clip().catch(() => {});   // encoded now, so share opens at once
@@ -241,7 +245,7 @@ async function step(a) {  // results of a step started before a reset are droppe
   }
 }
 
-async function encode() {  // the last CLIP frames as an MP4 under the link: 8x nearest-neighbour, 6 fps, last frame 2 s
+async function encode() {  // the run as an MP4 under the link: 8x nearest-neighbour, at most a minute, the last frame 2 s
   const fs = frames.slice(), d = new Date(), p2 = n => String(n).padStart(2, '0');   // play goes on while it encodes
   const name = `tinywmcraft-score-${score}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
     `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.mp4`;
@@ -255,12 +259,16 @@ async function encode() {  // the last CLIP frames as an MP4 under the link: 8x 
   text(LINK[1], text(LINK[0], x, y, CAP, c, U), y, ORANGE, c, U);
   const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
   const source = new CanvasSource(out, { codec: 'avc', bitrate: QUALITY_HIGH });
-  output.addVideoTrack(source, { frameRate: 6 });
+  // 6 fps, faster for long runs up to 30 fps, then every k-th move, so that a run of any length fits in about a minute
+  const k = Math.ceil(fs.length / (30 * 58)), shown = fs.filter((_, i) => i % k === 0 || i === fs.length - 1);
+  const fps = Math.max(6, Math.min(30, Math.round(shown.length / 58))), oc = one.getContext('2d');
+  output.addVideoTrack(source, { frameRate: fps });
   await output.start();
-  for (const [i, f] of fs.entries()) {
-    one.getContext('2d').putImageData(f, 0, 0);
+  for (const [i, f] of shown.entries()) {
+    paint(oc, f);
     c.drawImage(one, 0, LINE * G, out.width, H * G);
-    await source.add(i / 6, i === fs.length - 1 ? 2 : 1 / 6);
+    await source.add(i / fps, i === shown.length - 1 ? 2 : 1 / fps);
+    if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / shown.length)}%`);
   }
   await output.finalize();
   return new File([output.target.buffer], name, { type: 'video/mp4' });
