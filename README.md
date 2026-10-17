@@ -62,9 +62,9 @@ No game state, tile labels or pretrained features enter the model.
 
 | # | change | gFVD ↓ | AF ↑ | reward AP ↑ | done AP ↑ | train s | code | checkpoints |
 |---|---|---:|---:|---:|---:|---:|---|---|
-| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 56.9 ± 5.4 | 0.919 | 0.925 | 0.043 | 561 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | TBD |
+| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 50.7 ± 5.1 | 0.930 | 0.942 | 0.050 | 588 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | TBD |
+| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | 42.5 ± 2.1 | 0.934 | 0.913 | 0.027 | 572 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train.py) | TBD |
 
 Three snapshots of our own research so far. gFVD over all 64 generated frames, shown times 10^4.
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`; train s is the slowest seed.

@@ -2,14 +2,14 @@
 
 How to beat tinywmcraft, for people and for coding agents.
 
-The goal: a lower gFVD than the best so far (iteration 3, TBD ± TBD, shown times 10^4) from one 10-minute A100 run, without making action following, rewards or episode ends worse.
+The goal: a lower gFVD than the best so far (iteration 3, 42.5 ± 2.1, shown times 10^4) from one 10-minute A100 run, without making action following, rewards or episode ends worse.
 Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/#benchmark).
 
 ## Rules
 
 - **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/TBD_DATASET) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
 - **Training.** At most 600 s per run on one A100 40GB: data loading, tokenizer, compilation, everything. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint.
-- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 180 s on the same GPU; iteration 3 takes about TBD s. Anything else about generation is yours: the model family, the sampler, the number of steps.
+- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 180 s on the same GPU; iteration 3 takes about 103 s. Anything else about generation is yours: the model family, the sampler, the number of steps.
 - **One frame per action.** The model generates frame by frame and never sees future actions or frames. The interface below hands it one action at a time; reading the eval data, caching frames across calls or other tricks around it are against the rules and checked in review.
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
 - **Gates.** Measured in the maintainer's rerun, on the same machine and seeds. Ranked on gFVD alone:
@@ -18,7 +18,7 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 
 | AF | reward_ap | done_ap |
 |---:|---:|---:|
-| TBD | TBD | TBD |
+| 0.873 | 0.879 | 0.041 |
 
 One run is noisy: compare three-seed means, never single runs.
 
