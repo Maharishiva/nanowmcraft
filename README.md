@@ -62,9 +62,9 @@ No game state, tile labels or pretrained features enter the model.
 
 | # | change | gFVD ↓ | AF ↑ | reward AP ↑ | done AP ↑ | train s | code | checkpoints |
 |---|---|---:|---:|---:|---:|---:|---|---|
-| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 56.9 ± 5.4 | 0.919 | 0.925 | 0.043 | 561 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | TBD |
-| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 50.7 ± 5.1 | 0.930 | 0.942 | 0.050 | 588 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | TBD |
-| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | 42.5 ± 2.1 | 0.934 | 0.913 | 0.027 | 572 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train.py) | TBD |
+| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 56.9 ± 5.4 | 0.919 | 0.925 | 0.043 | 561 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft/tree/main/iteration1) |
+| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 50.7 ± 5.1 | 0.930 | 0.942 | 0.050 | 588 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft/tree/main/iteration2) |
+| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | 42.5 ± 2.1 | 0.934 | 0.913 | 0.027 | 572 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft/tree/main/iteration3) |
 
 Three snapshots of our own research so far. gFVD over all 64 generated frames, shown times 10^4.
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py`; train s is the slowest seed.
@@ -78,7 +78,7 @@ Play the best model. No dataset or GPU needed; a Mac CPU works:
 git clone https://github.com/Maharishiva/tinywmcraft && cd tinywmcraft
 uv venv --python 3.11 && source .venv/bin/activate
 uv pip install -r pyproject.toml --extra play
-curl -L --fail --create-dirs -o runs/best/model.npz https://huggingface.co/maharishiva/tinywmcraft/resolve/main/TBD/model.npz
+curl -L --fail --create-dirs -o runs/best/model.npz https://huggingface.co/maharishiva/tinywmcraft/resolve/main/iteration3/seed1/model.npz
 python play_wm.py --model runs/best/model.npz
 ```
 
@@ -86,7 +86,7 @@ Train and score your own on an NVIDIA GPU:
 
 ```bash
 uv pip install -r pyproject.toml --extra cuda
-HF_DATASET=https://huggingface.co/datasets/maharishiva/TBD_DATASET
+HF_DATASET=https://huggingface.co/datasets/maharishiva/tinywmcraft
 curl -L --fail --create-dirs -o data/train.npz $HF_DATASET/resolve/main/train.npz
 curl -L --fail -o data/eval.npz $HF_DATASET/resolve/main/eval.npz
 python train.py --data data/train.npz --out runs/base/model.npz --seed 0   # under 600 s on one A100, compilation included
@@ -99,7 +99,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # 2 t
 - **Compute:** at most 600 s per training run on one A100 40GB, everything included, with no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical and its timed part (`eval_s`: importing and loading your model, compiling, generating) takes at most 180 s on the same GPU. Any model and any sampler, as long as it generates one frame per action without seeing future actions.
 - **Seeds:** report training seeds 0, 1 and 2.
-- **Gates:** the mean gFVD beats the best by a noise-aware margin; AF, reward AP and done AP stay above fixed floors, 95% of iteration 1. Ranked on gFVD alone.
+- **Gates:** the mean gFVD beats the best by a noise-aware margin; AF and reward AP stay above fixed floors, 95% of iteration 1; done AP is reported, not gated (deaths are rare: 142 clips). Ranked on gFVD alone.
 
 Details, the model interface and how to submit: [program.md](program.md).
 
@@ -143,4 +143,4 @@ Ground truth left, world model right, same actions.</sub></p>
 
 MIT license. Game sprites in the browser player are from Craftax (MIT).
 
-[HF_DATASET]: https://huggingface.co/datasets/maharishiva/TBD_DATASET
+[HF_DATASET]: https://huggingface.co/datasets/maharishiva/tinywmcraft

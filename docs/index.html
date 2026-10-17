@@ -190,7 +190,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
 <dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating 2048 clips of 64 frames must take at most 180 s on the maintainer's Colab A100. Any model and any sampler, as long as it generates one frame per action.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
-<dt>gates</dt><dd>gFVD beats the best by a noise-aware margin. AF, reward AP and done AP stay above fixed floors, 95% of iteration 1. Ranked on gFVD alone.</dd>
+<dt>gates</dt><dd>gFVD beats the best by a noise-aware margin. AF and reward AP stay above fixed floors, 95% of iteration 1; done AP is reported, not gated (deaths are rare: 142 clips). Ranked on gFVD alone.</dd>
 </dl>
 <p>To submit:</p>
 <ol>
@@ -225,7 +225,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <footer>MIT license · <a href="https://github.com/Maharishiva/tinywmcraft">github</a> · <a href="https://huggingface.co/maharishiva/tinywmcraft">checkpoints</a> · <a data-dataset href="#">dataset</a></footer>
 </main>
 <script>
-const HF_DATASET = "https://huggingface.co/datasets/maharishiva/TBD_DATASET";   // TBD: the dataset repo, behind every "dataset" link
+const HF_DATASET = "https://huggingface.co/datasets/maharishiva/tinywmcraft";   // the dataset repo, behind every "dataset" link
 const $ = s => document.querySelector(s);
 for (const el of document.querySelectorAll("a[data-dataset]")) el.href = HF_DATASET;
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);

@@ -9,7 +9,7 @@ const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every sav
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 // The model the site plays: play.wgr made by export_web.py and convert_web.py from the best checkpoint, at a pinned
 // revision so the cached copy stays valid. starts.bin (next to this file) comes from the same checkpoint: change both.
-const HF_MODEL = '';   // TBD: https://huggingface.co/maharishiva/tinywmcraft/resolve/<revision>/web/play.wgr
+const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft/resolve/941e9c1dba3564f89fd5fbfc3c2b8477fc29a8ce/web/play.wgr';
 const q = new URLSearchParams(location.search);
 // ?model= and ?starts= load other files; served from this machine, it plays docs/play.wgr, fetched fresh every time
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
