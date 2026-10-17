@@ -1,13 +1,18 @@
 """Export the world model to one ONNX graph for in-browser play (convert_web.py turns it into play.wgr) and pack start states.
 
-    python docs/export_web.py --model runs/record1/model.npz
+    python docs/export_web.py --model runs/base/model.npz [--train path/to/train.py]
+    python docs/convert_web.py
 
-Writes docs/play.onnx (gitignored; weights stored fp16, computed in fp32) and docs/starts.bin. One call imagines the
-last frame of a full 32-frame window: a pass over the 31 past frames caches every block's temporal keys and values and
-the last past frame's summary; 8 Euler steps as in train._flow_one then run only the new frame's 16 tokens against that
-cache, exact since spatial attention is per frame and temporal attention causal (6.8 GFLOP per call by XLA's count,
-instead of 42 for eight full-window passes); one more new-frame pass at the context signal reads the reward, and the
-decoder renders the frame. Needs jax2onnx, onnx and onnxruntime on top of the repo's dependencies.
+Writes docs/play.onnx (gitignored; weights stored fp16, computed in fp32) and docs/starts.bin. The two belong together:
+the start latents come from the same checkpoint's tokenizer. One call imagines the last frame of a full 32-frame
+window: a pass over the 31 past frames caches every block's temporal keys and values and the last past frame's
+summary; 8 Euler steps as in train._flow_one then run only the new frame's 16 tokens against that cache, exact since
+spatial attention is per frame and temporal attention causal (about 7 GFLOP per call, instead of 42 for eight
+full-window passes); one more new-frame pass at the context signal reads the reward, and the decoder renders the
+frame. A model with a step embedding (train.DF.step_embed) gets it on the Euler passes, as in train._flow_one; a
+two-frame tokenizer (train.Encoder.temporal) encodes each start frame with its true predecessor. --train picks the
+module that defines the model (default: the repo's train.py; its kernels.py is the one next to it). Needs jax2onnx,
+onnx and onnxruntime on top of the repo's dependencies.
 
 play.onnx   in   past f32 [1,31,4,4,32] (tau*z + (1-tau)*eps where tau > 0.5, else z), tau f32 [1,31],
                  act i32 [1,32] (incoming action of each past frame, then the new action), noise, rnoise f32 [1,4,4,32]
@@ -15,9 +20,12 @@ play.onnx   in   past f32 [1,31,4,4,32] (tau*z + (1-tau)*eps where tau > 0.5, el
 starts.bin  uint32 N, f32 clean latents [N,31,4,4,32], u8 incoming actions [N,31], u8 last frame [N,63,63,3]
 """
 import argparse
+import importlib.util
+import inspect
 import shutil
 import sys
 import tempfile
+from functools import partial
 from pathlib import Path
 
 import flax.nnx as nnx
@@ -25,9 +33,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import kernels
-import train
+
+def _load_train():
+    """The module given by --train (read before the full argument parse: everything below depends on it)."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--train", type=Path, default=Path(__file__).resolve().parents[1] / "train.py")
+    path = p.parse_known_args()[0].train.resolve()
+    sys.path.insert(0, str(path.parent))                     # its own kernels.py
+    spec = importlib.util.spec_from_file_location("train", path)
+    mod = sys.modules["train"] = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+train = _load_train()
+import kernels  # noqa: E402  (the train module's)
 
 train.CDT, train.MP = jnp.float32, dict(dtype=jnp.float32, param_dtype=jnp.float32)  # fp32 on CPU, as play_wm.py
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -90,12 +110,17 @@ def make_step(model):
     """(past, tau, act, noise, rnoise) -> (z, rgb, reward, done), the contract above, in plain jnp."""
     df = model.df
     aemb = lambda a: jnp.take(df.aemb.embedding[...], a, axis=0)   # a gather, equal to DF.action_embed's matmul
+    step_embed = getattr(df, "step_embed", None)
 
-    def embed(x, tau, a, slots):
-        """train.DF.forward up to the blocks for frames x (1, L, GLAT, GLAT, TOK) at window slots `slots`."""
+    def embed(x, tau, a, slots, delta=0.0):
+        """train.DF.forward up to the blocks for frames x (1, L, GLAT, GLAT, TOK) at window slots `slots`; delta is
+        the Euler step size the model is told about (DF.forward's 8 * delta * step_embed, zero for the past)."""
         ae = aemb(a)
         h = df.inp(x.reshape(x.shape[:2] + (G, train.TOK))) + df.spos[...] + df.tpos[...][:, slots] + ae[:, :, None]
-        return h, df.taulin(train._tau_embed(tau.reshape(-1), train.D)).reshape(ae.shape) + ae
+        cond = df.taulin(train._tau_embed(tau.reshape(-1), train.D)).reshape(ae.shape) + ae
+        if step_embed is not None and delta:
+            cond = cond + 8.0 * delta * step_embed[...]
+        return h, cond
 
     def step(past, tau, act, noise, rnoise):
         h, cond = embed(past, tau, act[:, :PAST], slice(0, PAST))
@@ -105,8 +130,8 @@ def make_step(model):
             cache.append(kv)
         s_past = df.outn(h).mean(2)[:, -1]
 
-        def new_frame(z, level):
-            h, cond = embed(z[:, None], jnp.full((1, 1), level), act[:, PAST:], slice(PAST, PAST + 1))
+        def new_frame(z, level, delta=0.0):
+            h, cond = embed(z[:, None], jnp.full((1, 1), level), act[:, PAST:], slice(PAST, PAST + 1), delta)
             for b, kv in zip(df.blocks, cache):
                 h = block(b, h, cond, kv)[0]
             h = df.outn(h)
@@ -114,7 +139,7 @@ def make_step(model):
 
         z, dt = noise, 1.0 / train.STEPS
         for i in range(train.STEPS):                 # train._flow_one's update
-            z = z + dt * (new_frame(z, i * dt)[0] - z) / max(1.0 - i * dt, 1e-4)
+            z = z + dt * (new_frame(z, i * dt, dt)[0] - z) / max(1.0 - i * dt, 1e-4)
         s_new = new_frame(train.CTX_SIGNAL * z + (1.0 - train.CTX_SIGNAL) * rnoise, train.CTX_SIGNAL)[1]
         bins = np.linspace(-train.RLIM, train.RLIM, train.RBINS, dtype=np.float32)
         reward = train._symexp(jnp.sum(jax.nn.softmax(df.rew2(gelu(df.rew1(s_new))), -1) * bins, -1))
@@ -160,13 +185,21 @@ def pick_starts(data, n, seed=0):
     return [(e, t) for _, e, t in sorted(best, reverse=True)[:n]]
 
 
+def latents(model, data, picks):
+    """Standardized latents (N, PAST, GLAT, GLAT, TOK) of the PAST frames up to each (env, t): encoded with one more
+    frame in front and that one dropped, so a two-frame tokenizer sees every frame's true predecessor (pick_starts
+    keeps the frame before the window in the same episode)."""
+    frames = np.stack([data["frames"][t - PAST:t + 1, e] for e, t in picks])
+    return np.asarray(train.encode(model, frames))[:, 1:]
+
+
 def pack_starts(model, data, path, n):
     """starts.bin, little-endian: uint32 N, f32 clean standardized latents [N, PAST, GLAT, GLAT, TOK], u8 incoming
     actions [N, PAST], u8 last frame [N, H, W, 3]."""
     picks = pick_starts(data, n)
-    frames = np.stack([data["frames"][t - PAST + 1:t + 1, e] for e, t in picks])
+    lat, frames = latents(model, data, picks), np.stack([data["frames"][t - PAST + 1:t + 1, e] for e, t in picks])
     acts = np.stack([data["actions"][t - PAST:t, e] for e, t in picks]).astype(np.uint8)
-    lat = np.asarray(train.encode(model, frames), "<f4")
+    lat = np.asarray(lat, "<f4")
     Path(path).write_bytes(np.uint32(len(picks)).astype("<u4").tobytes() + lat.tobytes() + acts.tobytes()
                            + np.ascontiguousarray(frames[:, -1]).tobytes())
     return picks
@@ -254,23 +287,46 @@ def export(model, path, min_size=1024):
     onnx.save(m, path)
 
 
+def reference(model, past, tau, act, noise):
+    """The new latent as the training code computes it (train.DF.forward, with its temporal cache and step
+    size where it has them, else full-window passes as train._flow_one did), from the same corrupted past and noise."""
+    df, dt = model.df, 1.0 / train.STEPS
+    seq, taus = jnp.concatenate([past, jnp.zeros_like(past[:, :1])], 1), jnp.concatenate([tau, jnp.zeros((1, 1))], 1)
+    if "caches" in inspect.signature(df.forward).parameters:
+        caches = df.forward(seq, taus, act, cache=True)
+        x1 = lambda z, level: df.forward(z[:, None], jnp.full((1, 1), level), act[:, PAST:], caches=caches, slot=PAST,
+                                         delta=dt)[0][:, 0]
+    else:
+        x1 = lambda z, level: df(seq.at[:, PAST].set(z), taus.at[:, PAST].set(level), act)[:, PAST]
+    z = noise
+    for i in range(train.STEPS):
+        z = z + dt * (x1(z, i * dt) - z) / max(1.0 - i * dt, 1e-4)
+    return z
+
+
 def check(model, path, data, pick):
-    """One call of play.onnx (onnxruntime, CPU) against the JAX function, from a start state."""
+    """One call of play.onnx (onnxruntime, CPU) against the exported JAX function, and the JAX function's frame against
+    the training code's own sampler, from a start state."""
     import onnxruntime as ort
     (e, t), rng = pick, np.random.default_rng(0)
-    inp = dict(past=np.asarray(train.encode(model, data["frames"][t - PAST + 1:t + 1, e]))[None],
-               tau=np.ones((1, PAST), np.float32), act=np.r_[data["actions"][t - PAST:t, e], 2].astype(np.int32)[None],
+    inp = dict(past=latents(model, data, [pick]), tau=np.ones((1, PAST), np.float32),
+               act=np.r_[data["actions"][t - PAST:t, e], 2].astype(np.int32)[None],
                noise=rng.standard_normal(SPECS["noise"][0], np.float32),
                rnoise=rng.standard_normal(SPECS["rnoise"][0], np.float32))
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
     out, ref = sess.run(None, inp), jax.jit(make_step(model))(*inp.values())
-    print("onnx vs jax max abs diff:", "  ".join(f"{k} {np.abs(np.float64(a) - np.float64(b)).max():.2e}"
-                                                for k, a, b in zip(["z", "rgb", "reward", "done"], out, ref)))
+    diff = lambda a, b: np.abs(np.float64(a) - np.float64(b)).max()
+    print("onnx vs jax max abs diff:", "  ".join(f"{k} {diff(a, b):.2e}" for k, a, b in zip(["z", "rgb", "reward", "done"], out, ref)))
+    z = jax.jit(partial(reference, model))(inp["past"], inp["tau"], inp["act"], inp["noise"])
+    rgb = train.decode(model, z)[0]                  # its own jit, outside the one above
+    print(f"jax vs train's sampler max abs diff: z {diff(ref[0], z):.2e}  rgb {diff(ref[1], rgb):.0f} / 255, "
+          f"{np.mean(np.asarray(ref[1]) != np.asarray(rgb)):.2%} of values differ; reward {float(out[2][0]):.3f} done {float(out[3][0]):.3f}")
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", type=Path, default=Path("runs/record1/model.npz"))
+    p.add_argument("--model", type=Path, default=Path("runs/base/model.npz"))
+    p.add_argument("--train", type=Path, help="the module that defines the model (read before this parse)")
     p.add_argument("--data", type=Path, default=Path("data/eval.npz"), help="held-out episodes for the start states")
     p.add_argument("--starts", type=int, default=24)
     p.add_argument("--copy", type=Path, help="also copy play.onnx here")
