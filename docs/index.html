@@ -231,7 +231,7 @@ for (const el of document.querySelectorAll("a[data-dataset]")) el.href = HF_DATA
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const url = u => /^https:\/\//.test(u || "") ? esc(u) : "";
 const num = v => typeof v === "number";
-const fx = (v, d) => num(v) ? (v + 1e-9).toFixed(d) : v == null ? "–" : esc(v);   // half up: 16.95 is 17.0; TBD stays TBD
+const fx = (v, d) => num(v) ? (v + 1e-9).toFixed(d) : v == null ? "–" : esc(v);   // half up: 2.05 is 2.1; TBD stays TBD
 const linkName = u => (u.match(/\/pull\/(\d+)/) || [])[1] ? "#" + u.match(/\/pull\/(\d+)/)[1] : (u.match(/\/(?:commit|blob|tree)\/(\w{7})/) || [, "link"])[1];
 const a = (u, text) => url(u) ? `<a href="${url(u)}">${esc(text)}</a>` : u ? esc(u) : "–";
 

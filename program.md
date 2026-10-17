@@ -2,26 +2,25 @@
 
 How to beat tinywmcraft, for people and for coding agents.
 
-The goal: a lower gFVD than the current record (14.7 ± 1.9, shown times 10^4) from one 10-minute A100 run, without making action following, rewards or episode ends worse.
-The current record and every earlier one are on the [leaderboard](https://maharishiva.github.io/tinywmcraft/#leaderboard).
+The goal: a lower gFVD than the best so far (iteration 3, TBD ± TBD, shown times 10^4) from one 10-minute A100 run, without making action following, rewards or episode ends worse.
+Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/#benchmark).
 
 ## Rules
 
-- **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft_500k) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
+- **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/TBD_DATASET) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
 - **Training.** At most 600 s per run on one A100 40GB: data loading, tokenizer, compilation, everything. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint.
-- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 180 s on the same GPU; the record takes about 155 s. Anything else about generation is yours: the model family, the sampler, the number of steps.
+- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 180 s on the same GPU; iteration 3 takes about TBD s. Anything else about generation is yours: the model family, the sampler, the number of steps.
 - **One frame per action.** The model generates frame by frame and never sees future actions or frames. The interface below hands it one action at a time; reading the eval data, caching frames across calls or other tricks around it are against the rules and checked in review.
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
-- **Gates.** Measured in the maintainer's rerun, on the same machine and seeds. Records are ranked on gFVD alone:
-  - gFVD: the record's mean minus the new mean must exceed `1.65 * sqrt((sd_record^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. With the current record (sd 1.9) and a new recipe of sd 1.0, the new mean must be below about 12.6. Stable recipes need a smaller margin.
-  - AF, reward correlation, reward AP and done AUC, on real frames and on the imagined rollout: the new three-seed mean stays at or above a fixed floor, 95% of the `train_tiny.py` baseline's mean. The floors do not move when the record changes. Reward recall and precision at the 0.05 cutoff are reported but not gated: AP scores the same head without picking a cutoff.
+- **Gates.** Measured in the maintainer's rerun, on the same machine and seeds. Ranked on gFVD alone:
+  - gFVD: the best mean minus the new mean must exceed `1.65 * sqrt((sd_best^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. Stable recipes need a smaller margin.
+  - AF, reward AP and done AP: the new three-seed mean stays at or above a fixed floor, 95% of iteration 1's mean (`train_tiny.py`). The floors do not move when the best changes.
 
-| AF | reward_corr | reward_ap | done_auc | imagined_reward_corr | imagined_return_corr | imagined_done_auc |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0.875 | 0.884 | 0.892 | 0.931 | 0.566 | 0.753 | 0.789 |
+| AF | reward_ap | done_ap |
+|---:|---:|---:|
+| TBD | TBD | TBD |
 
-
-One run is noisy: seeds 0, 1 and 2 of the record score 13.5, 16.9 and 13.7. Compare three-seed means, never single runs.
+One run is noisy: compare three-seed means, never single runs.
 
 ## The model interface
 
@@ -35,7 +34,7 @@ step(model, state, action, key) -> frame, state   # action (B,), frame (B, 63, 6
 heads(model, frames, actions, key) -> reward, done  # teacher-forced, (B, L) each; done is a probability, done[:, 0] = 0
 ```
 
-Per batch of 64 windows, eval calls `start` with 8 real frames, then `step` 16 times, then `heads` on 24-frame windows of real frames and of 8 real plus 16 generated frames.
+For every clip, eval calls `start` with 8 real frames, then `step` 64 times, then `heads` on real frames.
 `play_wm.py` uses the same interface, so any entry can be played.
 
 ## The loop
@@ -47,16 +46,16 @@ Per batch of 64 windows, eval calls `start` with 8 real frames, then `step` 16 t
 5. Keep the change if gFVD drops and AF and the heads hold; otherwise revert it.
 6. When an idea survives one seed, run seeds 1 and 2 and check the gates above.
 
-Exploratory runs can use any GPU and any seed; timings from other GPUs are only indicative. Records are decided on a Colab A100-SXM4-40GB.
+Exploratory runs can use any GPU and any seed; timings from other GPUs are only indicative. Iterations are decided on a Colab A100-SXM4-40GB.
 
-## Submitting a record
+## Submitting
 
 1. Open a pull request with your changes. The template asks for the three `ledger.jsonl` rows and links to the three `model.npz` files on Hugging Face, so anyone can play and score them.
-2. The maintainer retrains the three seeds from the pull request on a Colab A100 next to the current record.
-3. If the rerun passes the gates, the maintainer adds your record to `docs/records.jsonl` and merges. The leaderboard on the site updates with the merge and credits you with a link to the pull request.
+2. The maintainer retrains the three seeds from the pull request on a Colab A100 next to the best so far.
+3. If the rerun passes the gates, the maintainer adds it to `docs/records.jsonl` as the next iteration and merges. The benchmark on the site updates with the merge and credits you with a link to the pull request.
 
 ## Open problems
 
-- **Frames against rewards.** The [`normuon`](https://github.com/Maharishiva/tinywmcraft/tree/normuon) branch lowers gFVD to 12.4 with shortcut targets and scaled head gradients, and its reward AP drops from 0.945 to 0.929: the trunk learns less from the reward. It is not ported to the interface above yet. Keep the frame gain without losing the reward head. See [validation/normuon_20261016.md](validation/normuon_20261016.md).
-- **Cheaper sampling.** The record spends 8 Euler steps per frame. Fewer steps, second-order solvers, distillation, or a model that is not flow matching at all could free eval time and let a bigger model train.
-- **Long horizons.** The benchmark scores 16 frames; in play the world drifts after a few dozen. Anything that keeps it coherent longer will show in the browser first.
+- **Rare events.** Diamonds, iron tools, eating plants and deaths are a small share of the data, and a quarter of the eval clips hold one. A model that gets them right scores better, and makes the [challenge](https://maharishiva.github.io/tinywmcraft/#challenge) in the browser fairer.
+- **Cheaper sampling.** Eight Euler steps per frame. Fewer steps, better solvers, distillation, or a model that is not flow matching at all could free eval time and let a bigger model train.
+- **Long horizons.** The benchmark scores 64 frames; a run in the browser lasts up to 1000 moves. Anything that keeps the world coherent longer shows in the player first.
