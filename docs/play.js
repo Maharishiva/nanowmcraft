@@ -3,7 +3,12 @@
 // The network runs on wgr.js, a small WebGPU runtime in plain JS and WGSL made for this one graph (no onnxruntime, no wasm:
 // WebKit needed 0.5 to 1.1 GB to compile onnxruntime's 17 to 27 MB of wasm, close to all iOS allows a page)
 import { create } from './wgr.js';
+import { inventory, facing } from './hud.js';
+import { tutorial } from './tutorial.js';
+import { asleep } from './sleep.js';
 
+const X_HANDLE = '';   // the X handle the diamond caption ends with, when set
+const GITHUB = 'github.com/Maharishiva/tinywmcraft';
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
@@ -15,6 +20,14 @@ const q = new URLSearchParams(location.search);
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
 const MODEL = q.get('model') ?? (LOCAL || !HF_MODEL ? 'play.wgr' : HF_MODEL);
 const STARTS = q.get('starts') ?? 'starts.bin';
+// The tutorial's world, the first one on a first visit (?tut=1 or ?tut=a, ?tut=b: again, in look a or b): start 18 of
+// starts.bin, bright day, no wood yet, a tree three tiles straight up over open grass and one more up and to the right.
+// Pick another one if starts.bin changes.
+const TUT_START = STARTS === 'starts.bin' ? 18 : -1;
+const TUT = q.get('tut'), LOOK = TUT === 'b' ? 'b' : 'a';
+const SLEEP_MAX = 400;                         // steps skipped in one sleep at most
+const SLEEP_STEP_MS = 60, SLEEP_SHOW_MS = 1500; // skipped steps at most ~16 a second; the sleep banner stays at least 1.5 s
+const DIAMOND_SURE = 600;                      // a diamond is read when the next best count is this much worse (hud.js)
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
 const MOVES = 1000, MAX_SCALE = 7;            // moves in a run, then it ends; largest pixel scale
 const L = 31 * 512, RGB = 63 * 63 * 3;        // one 31-frame latent window, one frame
@@ -23,27 +36,24 @@ const BG = '#0a0a0a', FG = '#f0f0ee', ORANGE = '#ff6a13', KEY = '#1c1c1e', EDGE 
 // index = action; e.code, so the keys work on any keyboard layout
 const CODES = ['KeyQ', 'KeyA', 'KeyD', 'KeyW', 'KeyS', 'Space', 'Tab', 'KeyR', 'KeyT', 'KeyF', 'KeyP',
   'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6'];
-const CAPS = ['Q', 'A', 'D', 'W', 'S', 'SPACE', 'TAB', 'R', 'T', 'F', 'P', '1', '2', '3', '4', '5', '6'];
+const CAPS = ['Q', 'A', 'D', 'W', 'S', 'ACTION', 'TAB', 'R', 'T', 'F', 'P', '1', '2', '3', '4', '5', '6'];   // ACTION: space
 const ARROWS = { ArrowLeft: 1, ArrowRight: 2, ArrowUp: 3, ArrowDown: 4 };
-const NAMES = ['noop', 'left', 'right', 'up', 'down', 'do', 'sleep', 'place stone', 'place table', 'place furnace',
+const NAMES = ['noop', 'left', 'right', 'up', 'down', 'action', 'sleep', 'place stone', 'place table', 'place furnace',
   'place plant', 'make wood pickaxe', 'make stone pickaxe', 'make iron pickaxe', 'make wood sword',
   'make stone sword', 'make iron sword'];
 const TOUCH = matchMedia('(pointer: coarse)').matches;
 // the keyboard of play.gif under the frame in clips: action, x, y, width of each key (-1 shows any other key pressed), and
-// the reward square's x; SPACE exactly as wide as the two boxes above it
+// the reward square's x; ACTION exactly as wide as the two boxes above it
 const BOARD = [[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], RX = 52;
-// the same keys as buttons, the size of the action keys, each at row, column, columns spanned: SPACE about two keys wide, up
-// to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens
+// the same keys as buttons, the size of the action keys, each at row, column, columns spanned: ACTION about two keys wide,
+// up to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens
 const GRID = {
-  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 2] },
-  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], SPACE: [2, 4, 3] },
-  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], SPACE: [2, 1, 3] },
+  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 2] },
+  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 3] },
+  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3] },
 };
-const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'SPACE']];
-const READY = TOUCH ? 'ready: tap the keys or the map' : 'ready: W A S D to move, SPACE to hit';
-const TIPS = TOUCH  // the first-visit tutorial: the movement keys until the first move, then crafting until the first craft
-  ? ['tap these keys to move and hit,<br>or tap the map: around you to walk, on you to hit', 'tap to place and craft']
-  : ['W A S D to move, SPACE to hit:<br>your keyboard, these keys, or click the map', 'click to place and craft'];
+const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'ACTION']];
+const READY = TOUCH ? 'Tap the map to walk' : 'WASD to move, SPACE to act';   // after the tutorial
 const ICONS = [8, 7, 9, 10, 6, 0, 11, 12, 13, 14, 15, 16];
 const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111',
@@ -62,23 +72,32 @@ const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform 
 const root = document.getElementById('play');
 // a pixel-font label; u: screen pixels per font pixel (a game pixel on the movement keys, half of one elsewhere)
 const pix = (s, color = CAP, cls = 'px', u = '--fp') => `<img class="${cls}" src="${label(s, color)}" style="height:calc(var(${u}) * 5)" alt="">`;
-root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div></div>
-<div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${NAMES[a]}">${pix(k, CAP, 'px', '--px')}</button>`).join('')}
-<div class="tip">${TIPS[0]}</div></div>
+// the action keys show their icons, NOOP its name in the pixel font; ACTION and NOOP get their own font pixel (fit)
+const icon = a => a === 0 ? pix('NOOP', CAP, 'px', '--np') : `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">`;
+root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div>
+<div class="banner" hidden></div></div>
+<div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${a === 5 ? 'action (space)' : NAMES[a]}">` +
+  `${pix(k, CAP, 'px', a === 5 ? '--ap' : '--px')}</button>`).join('')}</div>
 <div class="st"></div></div>
 <div class="side"><div class="acts">${ICONS.map(a => `<button class="key" data-a="${a}" title="${NAMES[a]}">` +
-  `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">${pix(CAPS[a], CAP, 'px k')}</button>`).join('')}
-<div class="tip">${TIPS[1]}</div></div><div class="btns"><button class="key" data-a="save" title="save the clip">${pix('SAVE CLIP')}</button>
+  `${icon(a)}${pix(CAPS[a], CAP, 'px k')}</button>`).join('')}
+</div><div class="btns"><button class="key" data-a="save" title="save the clip">${pix('SAVE CLIP')}</button>
 <button class="key" data-a="share" title="share the clip">${pix('SHARE', ORANGE)}</button>
 <button class="key" data-a="reset" title="new world">${pix('NEW WORLD')}</button></div></div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const keys = root.querySelector('.keys'), acts = root.querySelector('.acts'), btns = root.querySelector('.btns');
+const banner = root.querySelector('.banner');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
 let session, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
-let best = +localStorage.getItem('tinywmcraft.best') || 0, tut = +localStorage.getItem('tinywmcraft.tut') || 0;
+let best = +localStorage.getItem('tinywmcraft.best') || 0;
 let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' or 'time' once the run is over; saving: someone
 // waits for the clip, so its progress shows
+// the tutorial: on a first visit or asked for with ?tut=; coach: the running one
+let coach = null, learn = TUT !== null || !localStorage.getItem('tinywmcraft.tutorial');
+// sleep: frames in a row that look asleep / awake, steps skipped so far (-1: not skipping); diamond: frames in a row that
+// show one in the inventory, and whether this run has had its diamond moment
+let sleepy = 0, awake = 0, skipped = -1, diamonds = 0, diamond = false, bannerOff = 0;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on phones the space goes to the controls
@@ -100,22 +119,33 @@ function fit() {  // the largest integer scale that fits. Every key is one size,
   Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
     marginTop: row ? TOP * s + 'px' : '' });
   Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
-    gridAutoRows: (row ? 12 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to SPACE's bottom
+    gridAutoRows: (row ? 12 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to ACTION's bottom
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
   root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
+  root.style.setProperty('--np', Math.max(1, Math.floor(b / 20)) + 'px');   // NOOP: 15 font pixels in three quarters of a key
+  const aw = keys.querySelector('[data-k="ACTION"]').getBoundingClientRect().width;   // ACTION: 23 font pixels, clear of the edge
+  root.style.setProperty('--ap', Math.max(1, Math.min(s, Math.floor((aw - 4 * s) / 23))) + 'px');
   msg.style.padding = `${TOP * s}px 16px 0`;   // what shows over the game sits on the frame
+  coach?.layout();
 }
 
-function hint() {  // the tutorial step on show, and the dimmed controls while the model loads
+function hint() {  // the dimmed controls while the model loads
   root.classList.toggle('off', !session);
-  root.dataset.tut = session && tut < 2 ? tut : '';
 }
 
-function learnt(a) {  // the tutorial moves on after the first move, then after the first craft or 30 more moves
-  if (tut === 0 && a >= 1 && a <= 5 || tut === 1 && (ICONS.includes(a) || moves >= 30)) {
-    localStorage.setItem('tinywmcraft.tut', ++tut);
-    hint();
-  }
+function learnt(early) {  // the tutorial is over: not again on this browser, the short hint instead
+  localStorage.setItem('tinywmcraft.tutorial', early ? 'skipped' : 'done');
+  coach = null;
+  learn = false;
+  if (!end) greet();
+}
+
+function teach(k) {  // the tutorial over start k, from its first frame
+  const known = [...starts.acts.subarray(k * 31, k * 31 + 31)].reverse().find(a => a >= 1 && a <= 4);   // the way it faces
+  const rgb = starts.rgb.subarray(k * RGB, (k + 1) * RGB);
+  coach = tutorial({ root, canvas, touch: TOUCH, look: LOOK, top: TOP, face: known ?? facing(rgb), onEnd: learnt });
+  coach.begin(rgb, inventory(rgb));
+  status('');
 }
 
 function text(s, x, y, color, c = ctx, u = 1) {  // the 3x5 pixel font, u screen pixels per font pixel; returns the end x
@@ -191,22 +221,22 @@ function paint(c, f, board = false) {  // one move: the score, the frame with a 
 }
 
 function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the frame, key and reward, not the pixels drawn
-  const f = { rgb, a, r, score, best, moves, end };
+  const f = { rgb, a, r, score, best, moves, end, diamond };
   paint(ctx, f);
   for (const el of root.querySelectorAll('.key[data-a]')) el.classList.toggle('on', +el.dataset.a === a);   // the key pressed
   tick++;
   frames.push(f);
 }
 
-function card(c, f) {  // the last screen of every clip: the score to beat
+function card(c, f) {  // the last screen of every clip: the score to beat, or the diamond
   c.fillStyle = BG;
   c.fillRect(0, 0, 63, H);
   const mid = (s, y, color, u = 1) => text(s, (63 - u * (4 * s.length - 1)) >> 1, y, color, c, u);
   mid('MY SCORE', 14, CAP);
   mid(String(f.score), 24, ORANGE, 4);
   mid(`IN ${f.moves} MOVE${f.moves === 1 ? '' : 'S'}`, 50, CAP);
-  mid('CAN YOU', 66, FG);
-  mid('BEAT IT?', 73, FG);
+  mid(f.diamond ? 'I GOT A' : 'CAN YOU', 66, FG);
+  mid(f.diamond ? 'DIAMOND!' : 'BEAT IT?', 73, f.diamond ? ORANGE : FG);
 }
 
 const gauss = n => {  // standard normal, Box-Muller
@@ -219,9 +249,9 @@ const gauss = n => {  // standard normal, Box-Muller
   return x;
 };
 
-function reset() {  // a random real start: 31 clean latents with their incoming actions, and the last real frame
+function reset(k = starts.day[Math.floor(Math.random() * starts.day.length)]) {  // a real start, random unless given: 31
+  // clean latents with their incoming actions, and the last real frame
   episode++;
-  const k = Math.floor(Math.random() * starts.n);
   z = starts.lat.slice(k * L, (k + 1) * L);
   tau = new Float32Array(31).fill(1);
   act = new Int32Array(32);
@@ -230,8 +260,73 @@ function reset() {  // a random real start: 31 clean latents with their incoming
   score = moves = 0;
   end = '';
   msg.textContent = '';
+  wake();
+  sleepy = awake = diamonds = 0;
+  diamond = false;
+  gemOff();
+  banner.hidden = true;
   draw(starts.rgb.subarray(k * RGB, (k + 1) * RGB));
-  if (session) info(READY, true);
+  if (session && !coach) greet();
+  return k;
+}
+
+let tips = 0;   // moves the short hint stays before the status line shows what each move did
+function greet() {  // the short hint, big
+  status(READY, true);
+  st.classList.add('big');
+  tips = 12;
+}
+
+function spot(inv) {  // the diamond moment: a diamond in the inventory on two frames in a row, once a run
+  const d = inv.diamond;
+  diamonds = d.n >= 1 && d.margin > DIAMOND_SURE ? diamonds + 1 : 0;
+  if (diamonds >= 2 && !diamond) {
+    diamond = frames.at(-1).diamond = true;   // the clip ends on it
+    banner.className = 'banner gem';   // words only, so taps on the map go through; the save button pulses
+    banner.innerHTML = `<b>${pix('DIAMOND!', ORANGE, 'px', '--px')}</b><span>Save the clip</span>`;
+    banner.hidden = false;
+    btns.querySelector('[data-a="save"]').classList.add('glow');
+    bannerOff = moves + 10;
+  } else if (banner.classList.contains('gem') && moves >= bannerOff) gemOff();
+}
+
+function gemOff() {
+  if (banner.classList.contains('gem')) banner.hidden = true;
+  btns.querySelector('[data-a="save"]').classList.remove('glow');
+}
+
+function doze(rgb) {  // asleep: the sleep is skipped, NOOP after NOOP, until two frames are awake (the detector makes no
+  // errors on real or model frames, so one asleep frame is enough; two awake ones ride over a one-frame flicker)
+  if (asleep(rgb)) sleepy++, awake = 0;
+  else awake++, sleepy = 0;
+  if (skipped < 0 && sleepy >= 1 && !end) setTimeout(snooze);
+}
+
+async function snooze() {  // one step in flight at a time, as fast as the model runs, at most SLEEP_MAX steps
+  if (skipped >= 0) return;
+  skipped = 0;
+  banner.className = 'banner zzz';
+  banner.innerHTML = '<b>Sleeping… zzz</b><span>you wake when energy is full</span><button data-a="wake">wake me</button>';
+  banner.hidden = false;
+  const ep = episode, t0 = performance.now();
+  while (skipped >= 0 && skipped < SLEEP_MAX && awake < 2 && !end && ep === episode) {
+    while (busy) await new Promise(r => setTimeout(r, 5));
+    if (skipped < 0 || ep !== episode) break;
+    const t = performance.now();
+    await step(0);
+    if (skipped >= 0) skipped++;   // not if "wake me" came while the step ran
+    await new Promise(r => setTimeout(r, SLEEP_STEP_MS - (performance.now() - t)));   // slow enough to see the night pass
+  }
+  await new Promise(r => setTimeout(r, SLEEP_SHOW_MS - (performance.now() - t0)));   // a short nap still shows its banner
+  if (ep === episode) wake();
+}
+
+function wake() {  // skipping stops; stopped while still asleep ("wake me", the cap), asleep frames count again only after an
+  // awake one
+  if (skipped < 0) return;
+  skipped = -1;
+  if (awake < 2) sleepy = -1e9;
+  if (banner.classList.contains('zzz')) banner.hidden = true;
 }
 
 function feeds() {  // the past fed corrupted to its signal levels tau, fresh noise every call
@@ -261,9 +356,14 @@ async function step(a) {  // results of a step started before a reset are droppe
     score += r > 0.5;
     if (score > best) localStorage.setItem('tinywmcraft.best', best = score);
     draw(o.rgb, a, r);
-    info(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
-    learnt(a);
+    if (tips > 0) --tips || status('');   // the short hint goes after a few moves
+    else info(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
+    const inv = inventory(o.rgb);
+    coach?.frame({ rgb: o.rgb, a, r, inv, over: !!end });
+    spot(inv);
+    doze(o.rgb);
     if (!end) return;
+    banner.hidden = true;
     msg.innerHTML = '<div class="end"><button data-a="save">save clip</button><button class="hot" data-a="share">share</button>' +
       '<button data-a="reset">new world</button></div>';
     clip().catch(() => {});   // encoded now, so share opens at once
@@ -274,7 +374,7 @@ async function step(a) {  // results of a step started before a reset are droppe
 
 async function encode() {  // the run as an MP4 under the link: 8x nearest-neighbour, at most a minute, then the score card
   const fs = frames.slice(), d = new Date(), p2 = n => String(n).padStart(2, '0');   // play goes on while it encodes
-  const name = `tinywmcraft-score-${score}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
+  const name = `tinywmcraft-${fs.at(-1).diamond ? 'diamond' : 'score'}-${score}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
     `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.mp4`;
   const { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } = await (mux ??= import(MEDIABUNNY));
   const G = 8, LINE = 5, U = 3, out = document.createElement('canvas'), one = document.createElement('canvas');
@@ -334,8 +434,12 @@ async function save() {  // a download; on iPhones and iPads the share sheet ins
 
 async function share() {  // phones: the clip to the share sheet, its caption to the clipboard; computers: a post on X with the
   // caption, the clip downloaded to attach
-  const text = `I scored ${score} inside a world model trained in under 10 minutes for $0.1 of compute. ` +
-    `Every frame is generated by a neural network on my GPU. Can you beat it? ${SITE}`;
+  const handle = X_HANDLE && ' @' + X_HANDLE.replace(/^@/, '');
+  const text = diamond
+    ? `I got a diamond inside a world model trained in under 10 minutes for $0.1 of compute. Every frame is generated ` +
+      `by a neural network on my GPU. ${SITE} ${GITHUB}${handle}`
+    : `I scored ${score} inside a world model trained in under 10 minutes for $0.1 of compute. ` +
+      `Every frame is generated by a neural network on my GPU. Can you beat it? ${SITE}${handle}`;
   if (FILES) {
     navigator.clipboard?.writeText(text).catch(() => {});
     return send('caption copied: paste it with the clip');
@@ -365,14 +469,19 @@ async function send(done = '') {  // the clip alone: given text as well, apps on
 let stage = 'loading';   // what was going on, shown with an error
 const fail = e => { msg.textContent = `${stage}: ${e.name && e.name !== 'Error' ? e.name + ': ' : ''}${e.message ?? e}`; status('error'); };
 
-function press(a) {  // an action index, 'reset', 'save' or 'share'
+function press(a) {  // an action index, 'reset', 'save', 'share', 'wake' (stop skipping a sleep) or 'skip' (the tutorial)
   if (a === 'save' || a === 'share') {   // never blocked for long: a share sheet left open holds nothing
     if (frames.length) (a === 'save' ? save() : share()).catch(e => status(`no clip: ${e.message ?? e}`, true));
     return;
   }
+  if (a === 'wake') return wake();
+  if (a === 'skip') return coach?.end(true);
   if (!session) return;
-  if (a === 'reset') return reset();
-  if (busy || end) return;
+  if (a === 'reset') {   // a new world also ends the tutorial
+    coach?.end(true);
+    return reset();
+  }
+  if (busy || end || skipped >= 0) return;   // while a sleep is skipped, only "wake me" acts
   step(a).catch(fail);
 }
 
@@ -414,7 +523,10 @@ async function main() {
   const b = await load(STARTS, 'start frames'), n = new DataView(b.buffer).getUint32(0, true);
   starts = { n, lat: new Float32Array(b.buffer, 4, n * L), acts: b.subarray(4 + 4 * n * L, 4 + 4 * n * L + 31 * n) };
   starts.rgb = b.subarray(4 + 4 * n * L + 31 * n);
-  reset();
+  // random worlds start early in the day, dusk 80+ steps away (starts_day.json, indices into the default starts.bin)
+  const day = STARTS === 'starts.bin' ? await fetch('starts_day.json').then(r => r.json()).catch(() => []) : [];
+  starts.day = day.filter(k => k < n).length ? day.filter(k => k < n) : [...Array(n).keys()];
+  const first = reset(learn && TUT_START >= 0 && TUT_START < n ? TUT_START : undefined);
   stage = 'loading the model';
   const model = await load(MODEL, 'world model', !LOCAL && /^https:\/\//.test(MODEL));   // pinned URLs are cached
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
@@ -430,7 +542,8 @@ async function main() {
   session = s;
   msg.textContent = '';
   hint();
-  info(READY, true);
+  if (learn && episode === 1) teach(first);
+  else greet();
   mux = import(MEDIABUNNY);   // the MP4 encoder, loaded in the background so saving a clip is quick
 }
 
@@ -456,3 +569,5 @@ fit();
 hint();
 if (navigator.gpu) main().catch(fail);
 else msg.innerHTML = '<b>needs WebGPU</b><span>Chrome, Edge, or Safari 26+</span>';
+if (LOCAL) window.tinywm = { press, inventory, get frame() { return frames.at(-1); }, get coach() { return coach; },
+  get busy() { return busy; }, get skipped() { return skipped; } };   // for testing on this machine

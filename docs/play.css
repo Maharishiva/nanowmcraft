@@ -37,17 +37,49 @@
 @media (hover: hover) { #play button.key:hover { border-color: #ff6a13; } }
 @media (hover: none) { #play img.k { display: none; } }
 
-/* the first-visit tutorial: a tag pointing at the movement keys, then at the action keys; each flashes three times */
-#play .tip { display: none; position: absolute; z-index: 2; left: 0; right: 0; bottom: calc(100% + 9px); box-sizing: border-box;
-  padding: 6px 10px; background: #ff6a13; color: #0a0a0a; text-align: center; pointer-events: none; }
-#play .tip::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
-  border: 7px solid transparent; border-top-color: #ff6a13; }
-#play[data-tut="0"] .keys .tip, #play[data-tut="1"] .acts .tip { display: block; }
-#play[data-tut="0"] .keys .key, #play[data-tut="1"] .acts .key { animation: hl 1s steps(2) 3; }   /* then only the tag */
-@keyframes hl { 0% { border-color: #ff6a13; } 50%, 100% { border-color: #3a3a3e; } }
+#play [hidden] { display: none !important; }
+#play .st.big { font-size: 14px; }
+
+/* the tutorial (tutorial.js): an outline that pulses on the target, and a big bubble with a pointer next to it (look a) or
+   one caption over the top of the frame (look b); a small way out on the empty corner of the inventory strip */
+#play { position: relative; }
+#play .coach { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+#play .coach .ring { position: absolute; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+  border: 3px solid #ff6a13; color: #fff; font-weight: bold; line-height: 1; text-shadow: 0 0 3px #000, 0 0 6px #000;
+  animation: pulse 1s ease-in-out infinite; }
+#play .coach .ring.flash { animation: flash .6s steps(2) 3, pulse 1s ease-in-out 1.8s infinite; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 #ff6a13cc; } 50% { box-shadow: 0 0 0 6px #ff6a1300; border-color: #ffb07a; } }
+@keyframes flash { 0% { background: #ff6a1366; border-color: #fff; } 50% { background: none; border-color: #ff6a13; } }
+#play .coach .bub { position: absolute; box-sizing: border-box; padding: 9px 14px; background: #ff6a13; color: #0a0a0a;
+  font-size: 22px; font-weight: bold; line-height: 1.2; white-space: nowrap; box-shadow: 0 3px 0 #0a0a0a88; }
+#play .coach .bub img { width: 1.1em; height: 1.1em; vertical-align: -.15em; }
+#play .coach .bub::after { content: ""; position: absolute; border: 9px solid transparent; }
+#play .coach .bub.top::after { top: 100%; left: var(--ax); margin-left: -9px; border-top-color: #ff6a13; }
+#play .coach .bub.bottom::after { bottom: 100%; left: var(--ax); margin-left: -9px; border-bottom-color: #ff6a13; }
+#play .coach .bub.left::after { left: 100%; top: var(--ay); margin-top: -9px; border-left-color: #ff6a13; }
+#play .coach .bub.right::after { right: 100%; top: var(--ay); margin-top: -9px; border-right-color: #ff6a13; }
+#play .coach .bub.cap { display: flex; align-items: center; justify-content: center; padding: 4px 10px; text-align: center;
+  white-space: normal; box-shadow: none; }
+#play .coach .bub.cap::after { display: none; }
+#play .coach .skip { position: absolute; pointer-events: auto; padding: 4px 8px; font: inherit; font-size: 12px; color: #aaaaa8;
+  background: #0a0a0acc; border: 1px solid #3a3a3e; border-radius: 0; cursor: pointer; }
+
+/* over the game: the diamond moment, and the sleep being skipped */
+#play .banner { position: absolute; left: 0; right: 0; top: 18%; z-index: 4; display: flex; flex-direction: column; pointer-events: none;
+  align-items: center; gap: 10px; padding: 14px 8px; background: #0a0a0acc; text-align: center; }
+#play .banner b { display: block; line-height: 0; }
+#play .banner.zzz b { line-height: 1.2; text-shadow: 0 2px 6px #000; }
+#play .banner.gem { top: 0; gap: 8px; padding: 8px; }
+#play .banner span { font-size: 17px; font-weight: bold; }
+#play .banner.zzz { top: 0; bottom: 0; justify-content: center; background: #0a0a2a99; }
+#play .banner.zzz b { color: #f0f0ee; font-weight: normal; font-size: 26px; }
+#play .banner button { pointer-events: auto; height: 44px; padding: 0 14px; font: inherit; font-size: 15px; color: inherit; background: #1c1c1e;
+  border: 2px solid #3a3a3e; border-radius: 0; cursor: pointer; }
+#play .banner .hot { background: #ff6a13; border-color: #ff6a13; color: #0a0a0a; }
 
 @media (max-width: 700px) {
   #play { flex-direction: column; align-items: center; gap: var(--px, 4px); }
-  #play .acts .tip { bottom: auto; top: calc(100% + 9px); }   /* under the action keys, clear of the keys above */
-  #play .acts .tip::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #ff6a13; }
+  #play .coach .bub { font-size: 20px; }
 }
+#play .key.cue, #play .key.glow { animation: cue 1s ease-in-out infinite; }
+@keyframes cue { 50% { border-color: #ff6a13; } }
