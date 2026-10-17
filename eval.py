@@ -54,7 +54,7 @@ import numpy as np
 H = W = 63
 A_N = 17
 CTX, FUT, AF_HOR, HEAD_HOR, N_CLIPS = 8, 64, 16, 16, 2048
-EVAL_SEED, BATCH, FEAT_BATCH = 0, 64, 16       # clips per rollout batch, clips per feature pass
+EVAL_SEED, BATCH, FEAT_BATCH = 0, 256, 16      # clips per rollout batch, clips per feature pass
 CLIP, FEAT_SEED, THR = 4, 1234, 16 / 255
 GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 180
 
