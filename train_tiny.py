@@ -175,12 +175,12 @@ def tok_loss(tok, frames, key, batch):
 
 def wm_loss(wm, data, key, batch):
     """Flow matching on random windows at independent per-frame signal levels, weighted up with the signal,
-    plus the heads on the same pass; frames after an episode reset are masked out."""
-    Z, A, R, Dn = data
+    plus the heads on the same pass; frames after an episode end are masked out; a truncation is no death."""
+    Z, A, R, Dn, Tr = data
     kt, ke, ks, kn = jax.random.split(key, 4)
     t = jax.random.randint(kt, (batch, 1), 0, Z.shape[0] - WIN + 1) + jnp.arange(WIN)
     e = jax.random.randint(ke, (batch, 1), 0, Z.shape[1])
-    z, a, r, d = Z[t, e], A[t, e], R[t, e], Dn[t, e]
+    z, a, r, d, tr = Z[t, e], A[t, e], R[t, e], Dn[t, e], Tr[t, e]
     a, r = (v.at[:, 0].set(jnp.where(d[:, 0] > 0, 0, v[:, 0])) for v in (a, r))
     valid = jnp.cumprod(1 - d.at[:, 0].set(0), axis=1)
     tau = jax.random.uniform(ks, (batch, WIN))
@@ -189,9 +189,9 @@ def wm_loss(wm, data, key, batch):
     label = jnp.clip(jnp.round(r / RSTEP).astype(jnp.int32) + RBINS // 2, 0, RBINS - 1)
     flow = jnp.mean((pred - z) ** 2, axis=(2, 3, 4))
     rew = optax.softmax_cross_entropy_with_integer_labels(reward, label)
-    end = optax.sigmoid_binary_cross_entropy(done, d[:, 1:])
+    end = optax.sigmoid_binary_cross_entropy(done, d[:, 1:] * (1 - tr[:, 1:]))
     w = valid * (0.9 * tau + 0.1)
-    return (jnp.sum(w * (flow + 0.1 * rew)) + 0.1 * jnp.sum(w[:, :-1] * end)) / valid.sum()
+    return (jnp.sum(w * (flow + 0.1 * rew)) + 0.1 * jnp.sum(w[:, :-1] * (1 - tr[:, 1:]) * end)) / valid.sum()
 
 def optimizer(cfg, steps):
     """Muon on every Linear and Conv kernel, AdamW on the rest; linear warmup, cosine decay."""
@@ -219,6 +219,7 @@ def train(data_path, out, cfg):
     frames = jnp.asarray(data["frames"])
     def incoming(k, v): return jnp.pad(jnp.asarray(data[k], float), ((1, 0), (0, 0)), constant_values=v)
     A, R, Dn = incoming("actions", 0).astype(jnp.int32), incoming("rewards", 0), incoming("dones", 1)
+    Tr = incoming("truncated", 0) if "truncated" in data.files else 0 * R  # an end, but no death
     model = Model(nnx.Rngs(cfg.seed))
     print(f"[data] frames {frames.shape}, {time.time() - t0:.0f} s", flush=True)
     loss = fit(model.tok, tok_loss, frames.reshape(-1, H, W, 3), cfg.tok_steps, cfg.tok_batch, cfg)
@@ -226,11 +227,10 @@ def train(data_path, out, cfg):
     Z = jax.jit(lambda tok, f: jax.lax.map(tok.encode, f))(model.tok, frames)
     model.tok.mean[...], model.tok.std[...] = Z.mean((0, 1, 2, 3)), Z.std((0, 1, 2, 3))
     Z = (Z - model.tok.mean[...]) / model.tok.std[...]
-    loss = fit(model.wm, wm_loss, (Z, A, R, Dn), cfg.wm_steps, cfg.wm_batch, cfg)
+    loss = fit(model.wm, wm_loss, (Z, A, R, jnp.maximum(Dn, Tr), Tr), cfg.wm_steps, cfg.wm_batch, cfg)
     print(f"[world model] loss {loss[0]:.4f} -> {loss[-1]:.4f}, {time.time() - t0:.0f} s", flush=True)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    meta = {"cfg": asdict(cfg), "train_s": round(time.time() - t0, 1)}
-    np.savez(out, *jax.tree.leaves(model), meta=json.dumps(meta))
+    np.savez(out, *jax.tree.leaves(model), meta=json.dumps(dict(cfg=asdict(cfg), train_s=round(time.time() - t0, 1))))
 
 def load_meta(path): return json.loads(str(np.load(path)["meta"]))
 

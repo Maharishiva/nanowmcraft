@@ -158,9 +158,24 @@ class Tok(nnx.Module):
     def __init__(self, rngs):
         self.enc, self.dec = Encoder(rngs), Decoder(rngs)
 
+def _attend_cached(qkv, qbias, kv, n):
+    """Causal temporal attention of the one frame at slot n, qkv (B, 1, N, 3d), over the window's keys and values kv
+    (B, L, N, 2d) with slot n replaced by its own and later slots masked: kernels' XLA attention for row n alone.
+    Returns the output and the updated keys and values."""
+    B, _, N, d3 = qkv.shape
+    d, L = d3 // 3, kv.shape[1]
+    kv = jax.lax.dynamic_update_slice_in_dim(kv, qkv[..., d:], n, axis=1)
+    q = (qkv[..., :d] + qbias.astype(qkv.dtype)).reshape((B, 1, N, HEADS, d // HEADS))
+    k, v = [x.reshape((B, L, N, HEADS, d // HEADS)) for x in jnp.split(kv, 2, -1)]
+    s = jnp.einsum("blnhd,bmnhd->bnhlm", q * (q.shape[-1] ** -0.5), k, preferred_element_type=jnp.float32)
+    s = jnp.where(jnp.arange(L) <= n, s, kernels.MASKED)
+    o = jnp.einsum("bnhlm,bmnhd->blnhd", jax.nn.softmax(s, -1).astype(v.dtype), v)
+    return o.reshape((B, 1, N, d)), kv
+
 class Block(nnx.Module):
     """adaLN-zero: spatial attention over a frame's tokens, causal temporal attention over frames, MLP (bf16);
-    the attention, modulated norms, gated residuals and gelu are Pallas kernels on GPU (kernels.py)."""
+    the attention, modulated norms, gated residuals and gelu are Pallas kernels on GPU (kernels.py). Also returns the
+    temporal keys and values; given those of a whole window as kv, h is the one frame at slot n."""
     def __init__(self, rngs, d):
         self.mod = nnx.Linear(d, 9 * d, kernel_init=ZEROS, bias_init=ZEROS, rngs=rngs, **MP)
         self.sqkv = nnx.Linear(d, 3 * d, use_bias=False, rngs=rngs, **MP)
@@ -172,12 +187,17 @@ class Block(nnx.Module):
         self.m1 = nnx.Linear(d, 2 * d, rngs=rngs, **MP)
         self.m2 = nnx.Linear(2 * d, d, rngs=rngs, **MP)
 
-    def __call__(self, h, cond):
+    def __call__(self, h, cond, kv=None, n=0):
         norm, gate, attend = kernels.norm_mod, kernels.gated_add, kernels.attention
         ss, sh, sg, ts, th, tg, ms, mh, mg = jnp.split(self.mod(cond)[:, :, None, :], 9, axis=-1)
         h = gate(h, sg, self.so(attend(self.sqkv(norm(h, ss, sh)), self.sq_bias[...], HEADS, False)))
-        h = gate(h, tg, self.to(attend(self.tqkv(norm(h, ts, th)), self.tq_bias[...], HEADS, True)))
-        return gate(h, mg, self.m2(kernels.gelu(self.m1(norm(h, ms, mh)))))
+        qkv = self.tqkv(norm(h, ts, th))
+        if kv is None:
+            y, kv = attend(qkv, self.tq_bias[...], HEADS, True), qkv[..., h.shape[-1]:]
+        else:
+            y, kv = _attend_cached(qkv, self.tq_bias[...], kv, n)
+        h = gate(h, tg, self.to(y))
+        return gate(h, mg, self.m2(kernels.gelu(self.m1(norm(h, ms, mh))))), kv
 
 class DF(nnx.Module):
     """Predicts clean latents from (B, L, GLAT, GLAT, TOK) windows at per-frame signal levels tau (B, L) under the
@@ -214,17 +234,21 @@ class DF(nnx.Module):
         h = jnp.concatenate([summary.astype(CDT), self.action_embed(next_actions)], -1)
         return self.done2(nnx.gelu(self.done1(h)))[..., 0].astype(jnp.float32)
 
-    def forward(self, x, tau, a):
-        """Clean-latent prediction (B, L, GLAT, GLAT, TOK) and the per-frame summary (B, L, D)."""
+    def forward(self, x, tau, a, kvs=None, n=0):
+        """Clean-latent prediction (B, L, GLAT, GLAT, TOK), the per-frame summary (B, L, D) and every block's temporal
+        keys and values; given those of a pass over the whole window as kvs, x is the one frame at slot n."""
         B, L = x.shape[:2]
         ae = self.action_embed(a)
         h = self.inp(x.reshape((B, L, GLAT * GLAT, TOK)).astype(CDT))
-        h = h + self.spos.value.astype(h.dtype) + self.tpos.value[:, :L].astype(h.dtype) + ae[:, :, None, :]
+        pos = jax.lax.dynamic_slice_in_dim(self.tpos.value, n, L, axis=1)
+        h = h + self.spos.value.astype(h.dtype) + pos.astype(h.dtype) + ae[:, :, None, :]
         cond = self.taulin(_tau_embed(tau.reshape((-1,)), D).astype(CDT)).reshape((B, L, D)) + ae
-        for blk in self.blocks:
-            h = blk(h, cond)
+        out = []
+        for blk, kv in zip(self.blocks, kvs or [None] * DEPTH):
+            h, kv = blk(h, cond, kv, n)
+            out.append(kv)
         h = self.outn(h)
-        return self.out(h).reshape((B, L, GLAT, GLAT, TOK)).astype(jnp.float32), h.mean(2)
+        return self.out(h).reshape((B, L, GLAT, GLAT, TOK)).astype(jnp.float32), h.mean(2), out
 
 @nnx.jit
 def _encode(enc, zmean, zstd, obs_u8):
@@ -245,18 +269,23 @@ def decode(model, latent):
     """Standardized latents (..., GLAT, GLAT, TOK) -> uint8 frames (..., H, W, 3)."""
     return _decode(model.dec, model.df.zmean.value, model.df.zstd.value, latent)
 
-def _flow_one(apply, seq, taus, aseq, s, rng, n_steps=STEPS):
-    """Denoise slot s in n_steps Euler steps; the past (taus > 0.5) is fed corrupted to the signal levels in taus."""
+def _flow_one(df, seq, taus, aseq, s, rng, n_steps=STEPS):
+    """Denoise slot s in n_steps Euler steps; the past (taus > 0.5) is fed corrupted to the signal levels in taus. The
+    slots before s never see slot s (spatial attention stays in a frame, temporal attention is causal), so one pass
+    over the window gives every block's temporal keys and values and each Euler step runs slot s alone against them."""
     B = seq.shape[0]
     kc, kz = jax.random.split(rng)
     t5 = taus[..., None, None, None]
     seq = jnp.where(t5 > 0.5, t5 * seq + (1.0 - t5) * jax.random.normal(kc, seq.shape), seq)
     dt = 1.0 / n_steps
+    a = jax.lax.dynamic_slice_in_dim(aseq, s, 1, axis=1)
 
-    def step(z, tau_s):
-        x1 = apply(seq.at[:, s].set(z), taus.at[:, s].set(jnp.full((B,), tau_s)), aseq)[:, s]
-        return z + dt * (x1 - z) / jnp.maximum(1.0 - tau_s, 1e-4), None
-    return jax.lax.scan(step, jax.random.normal(kz, (B,) + seq.shape[-3:]), jnp.arange(n_steps) * dt)[0]
+    def step(carry, tau_s):
+        z, kvs = carry
+        x1, _, kvs = df.forward(z[:, None], jnp.full((B, 1), tau_s), a, kvs, s)
+        return (z + dt * (x1[:, 0] - z) / jnp.maximum(1.0 - tau_s, 1e-4), kvs), None
+    carry = jax.random.normal(kz, (B,) + seq.shape[-3:]), df.forward(seq, taus, aseq)[2]
+    return jax.lax.scan(step, carry, jnp.arange(n_steps) * dt)[0][0]
 
 def _start_latents(ctx, ctx_a, win=WIN):
     """Rollout state from context latents ctx (B, n0, ...) with incoming actions ctx_a (B, n0): the latent window, its
@@ -266,7 +295,7 @@ def _start_latents(ctx, ctx_a, win=WIN):
     aseq = jnp.zeros((B, win), jnp.int32).at[:, :n0].set(ctx_a)
     return seq, aseq, jnp.asarray(n0), jnp.asarray(n0)
 
-def _advance(apply, carry, action, key, steps=STEPS):
+def _advance(df, carry, action, key, steps=STEPS):
     """One latent for the actions (B,); the window slides once full; real context frames are fed at signal 1.0,
     generated ones at CTX_SIGNAL."""
     seq, aseq, n, r = carry
@@ -277,13 +306,13 @@ def _advance(apply, carry, action, key, steps=STEPS):
     n = jnp.minimum(n, win - 1)
     aseq = aseq.at[:, n].set(action)
     taus = jnp.broadcast_to(jnp.where(jnp.arange(win) < n, jnp.where(jnp.arange(win) < r, 1.0, CTX_SIGNAL), 0.0), (B, win))
-    z = _flow_one(apply, seq, taus, aseq, n, key, steps)
+    z = _flow_one(df, seq, taus, aseq, n, key, steps)
     return (seq.at[:, n].set(z), aseq, n + 1, r), z
 
-def _rollout_latents(apply, ctx, ctx_a, acts, rng, steps=STEPS, win=WIN):
+def _rollout_latents(df, ctx, ctx_a, acts, rng, steps=STEPS, win=WIN):
     """Free run from context latents ctx (B, n0, ...) with incoming actions ctx_a (B, n0): one latent per action in
     acts (T, B) -> (T, B, ...)."""
-    step = lambda carry, inputs: _advance(apply, carry, *inputs, steps)
+    step = lambda carry, inputs: _advance(df, carry, *inputs, steps)
     return jax.lax.scan(step, _start_latents(ctx, ctx_a, win), (acts, jax.random.split(rng, acts.shape[0])))[1]
 
 def _read_heads(df, latents, actions, key):
@@ -405,20 +434,25 @@ def _layout(actions, dones, length):
     rt, re = np.nonzero(np.asarray(resets[:T - length + 1]) > 0.5)
     return incoming, resets, jnp.asarray(rt), jnp.asarray(re)
 
-def _train_wm(df, Z, A, Dd, R, cfg):
+def _train_wm(df, Z, A, Dd, R, cfg, Tr=None):
     """Windows drawn uniformly, from the recent-loss table (hardmine) or at episode starts (startsamp); per-frame
     signal levels; the loss weight ramps with the signal. The heads train on the same forward pass, their gradient
-    reaches the trunk."""
+    reaches the trunk. Tr: optional truncation flags (T-1, E); a truncated transition ends an episode like a death
+    but is none, so the termination head neither learns it nor is scored on it."""
     warm = min(100, max(1, cfg.wm_steps // 10))
     opt = nnx.Optimizer(df, _optimizer(cfg.lr, cfg.wm_steps, cfg.decay, warm, 0.01), wrt=nnx.Param)
     T, E = Z.shape[:2]
     L, B = cfg.rollout, cfg.wm_batch
-    A, Dd, rst_t, rst_e = _layout(A, Dd, L)
+    if Tr is None:
+        A, Dd, rst_t, rst_e = _layout(A, Dd, L)
+    else:                                                  # Dd becomes the boundary (death or truncation)
+        A, Dd, rst_t, rst_e = _layout(A, jnp.maximum(Dd, Tr), L)
+        Tr = jnp.concatenate([jnp.zeros((1, E), jnp.float32), Tr], 0)
     R = jnp.concatenate([jnp.zeros((1, E), jnp.float32), R], 0)
     ltab, offz = jnp.full((T - L + 1, E), 10.0), jnp.arange(L)
 
     @nnx.jit
-    def run(df, opt, ltab, Z, A, Dd, R, keys):
+    def run(df, opt, ltab, Z, A, Dd, R, Tr, keys):
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(nnx.Carry, 0))
         def loop(carry, key):
             df, opt, ltab = carry
@@ -438,31 +472,39 @@ def _train_wm(df, Z, A, Dd, R, cfg):
             a = a.at[:, 0].set(jnp.where(dwin[:, 0] > 0.5, 0, a[:, 0]))
             r = r.at[:, 0].set(jnp.where(dwin[:, 0] > 0.5, 0.0, r[:, 0]))
             valid = jnp.cumprod(1.0 - dwin.at[:, 0].set(0.0), axis=1)
+            if Tr is None:
+                dtarget, dvalid = dwin[:, 1:], valid[:, :-1]
+            else:                                          # deaths only; no done loss on a truncated transition
+                twin = Tr[zi, ei][:, 1:]
+                dtarget, dvalid = dwin[:, 1:] * (1.0 - twin), valid[:, :-1] * (1.0 - twin)
             tau = jax.random.uniform(ktau, (B, L))
             t5 = tau[:, :, None, None, None]
             x_tau = (1.0 - t5) * jax.random.normal(keps, z.shape) + t5 * z
 
             def loss_fn(df):
-                x1, s = df.forward(x_tau, tau, a)
+                x1, s, _ = df.forward(x_tau, tau, a)
                 ramp = 0.9 * tau + 0.1
                 err = ramp * jnp.mean((x1 - z) ** 2, axis=(2, 3, 4))
                 ce = -jnp.sum(_two_hot(_symlog(r)) * jax.nn.log_softmax(df.reward_logits(s), -1), -1)
-                dl = optax.sigmoid_binary_cross_entropy(df.done_logits(s[:, :-1], a[:, 1:]), dwin[:, 1:])
+                dl = optax.sigmoid_binary_cross_entropy(df.done_logits(s[:, :-1], a[:, 1:]), dtarget)
                 loss = (jnp.sum(err * valid) + cfg.reward_weight * jnp.sum(ramp * ce * valid)) / (jnp.sum(valid) + 1e-6)
-                loss = loss + cfg.done_weight * jnp.sum(ramp[:, :-1] * dl * valid[:, :-1]) / (jnp.sum(valid[:, :-1]) + 1e-6)
+                loss = loss + cfg.done_weight * jnp.sum(ramp[:, :-1] * dl * dvalid) / (jnp.sum(dvalid) + 1e-6)
                 return loss, jnp.sum(err * valid, 1) / (jnp.sum(valid, 1) + 1e-6)
             (loss, perwin), grads = nnx.value_and_grad(loss_fn, has_aux=True)(df)
             opt.update(df, grads)
             ltab = ltab.at[t, e].set(0.5 * ltab[t, e] + 0.5 * perwin, unique_indices=True)
             return (df, opt, ltab), loss
         return loop((df, opt, ltab), keys)[1]
-    return run(df, opt, ltab, Z, A, Dd, R, jax.random.split(jax.random.PRNGKey(cfg.seed + 2), cfg.wm_steps))
+    return run(df, opt, ltab, Z, A, Dd, R, Tr, jax.random.split(jax.random.PRNGKey(cfg.seed + 2), cfg.wm_steps))
 
 def train(data_npz, out, cfg):
     t0 = time.time()
     data = np.load(data_npz)
     num_actions = json.loads(str(data["meta"])).get("num_actions", A_N)
     A, Dd, R = jnp.asarray(data["actions"], jnp.int32), jnp.asarray(data["dones"], jnp.float32), jnp.asarray(data["rewards"], jnp.float32)
+    Tr = jnp.asarray(data["truncated"], jnp.float32) if "truncated" in data.files else None
+    if Tr is not None:
+        print(f"[data] {int(Tr.sum())} truncations (boundaries, not deaths), {int((Dd * (1 - Tr)).sum())} deaths", flush=True)
     if A.size > cfg.data_budget:
         raise ValueError(f"the training data budget is {cfg.data_budget} transitions")
     frames = jnp.asarray(data["frames"])
@@ -483,7 +525,7 @@ def train(data_npz, out, cfg):
     print(f"[cache] latents {Z.shape} {time.time()-t2:.1f}s  raw std {float(flat.std()):.3f}", flush=True)
     del frames, flat
     t3 = time.time()
-    wl = _train_wm(df, Z, A, Dd, R, cfg)
+    wl = _train_wm(df, Z, A, Dd, R, cfg, Tr)
     wl.block_until_ready()
     q = [0, len(wl) // 4, len(wl) // 2, 3 * len(wl) // 4, -1]
     print(f"[wm] {cfg.wm_steps} steps {time.time()-t3:.1f}s  loss " + "  ".join(f"{float(wl[i]):.4f}" for i in q), flush=True)
@@ -493,6 +535,7 @@ def train(data_npz, out, cfg):
     np.savez(out.parent / "losses.npz", tok=np.asarray(tl), wm=np.asarray(wl))
     meta = {"cfg": asdict(cfg) | {"num_actions": num_actions}, "train_s": round(time.time() - t0, 1),
             "tokenizer_train_s": round(t2 - t1, 1), "data_sha256": data_sha,
+            "truncations": None if Tr is None else int(Tr.sum()),
             "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     arrs = {f"{k}.{i}": np.asarray(jax.device_get(leaf)) for k in ("enc", "dec", "df")
             for i, leaf in enumerate(jax.tree.leaves(nnx.split(getattr(model, k))[1]))}
