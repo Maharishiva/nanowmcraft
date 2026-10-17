@@ -2,6 +2,11 @@
 real rollout of a checkpoint. Each imagined frame is decoded after every one of its 8 flow-matching Euler steps.
 
     python docs/make_architecture_gif.py --model runs/base/model.npz --out docs/assets/architecture.gif
+
+--vertical v1 re-lays out the frames of that GIF top to bottom for phones (no model needed): encoder on top, world
+model in the middle, decoder at the bottom.
+
+    python docs/make_architecture_gif.py --vertical v1     # -> docs/assets/architecture_v1.gif
 """
 import argparse
 import sys
@@ -60,13 +65,18 @@ def rollout(model_path, data_path, seed=0):
     return frames, actions, np.asarray(ctx), Z, zdec
 
 
-ARGS = argparse.ArgumentParser()
-ARGS.add_argument("--model", type=Path, required=True)
-ARGS.add_argument("--data", type=Path, default=ROOT / "data" / "eval.npz")
-ARGS.add_argument("--out", type=Path, default=ROOT / "docs" / "assets" / "architecture.gif")
-ARGS.add_argument("--seed", type=int, default=0)
-ARGS = ARGS.parse_args()
-FRAMES, ACTIONS, CTX_LAT, Z, ZDEC = rollout(ARGS.model, ARGS.data, ARGS.seed)
+PARSER = argparse.ArgumentParser()
+PARSER.add_argument("--model", type=Path, help="checkpoint (the horizontal GIF)")
+PARSER.add_argument("--data", type=Path, default=ROOT / "data" / "eval.npz")
+PARSER.add_argument("--out", type=Path, help="default: docs/assets/architecture.gif, or architecture_v1.gif")
+PARSER.add_argument("--seed", type=int, default=0)
+PARSER.add_argument("--vertical", choices=["v1"], help="re-lay out the frames of --src top to bottom (phones)")
+PARSER.add_argument("--src", type=Path, default=ROOT / "docs" / "assets" / "architecture.gif")
+ARGS = PARSER.parse_args()
+if ARGS.vertical is None and ARGS.model is None:
+    PARSER.error("--model is required (or --vertical v1)")
+ARGS.out = ARGS.out or ROOT / "docs" / "assets" / (f"architecture_{ARGS.vertical}.gif" if ARGS.vertical else "architecture.gif")
+FRAMES = ACTIONS = CTX_LAT = Z = ZDEC = None              # set by main() from the rollout
 
 # ---------------------------------------------------------------- palette and font (from docs/make_play_gif.py)
 BG, FG, DIM, ORANGE = (10, 10, 10), (240, 240, 238), (106, 106, 106), (255, 106, 19)
@@ -129,11 +139,13 @@ def up(a, s):
 
 
 # ---------------------------------------------------------------- latent colours: fixed PCA fitted on the context latents
-_flat = CTX_LAT.reshape(-1, 32).astype(np.float64)
-_MU = _flat.mean(0)
-_, _S, _VT = np.linalg.svd(_flat - _MU, full_matrices=False)
-_PC = _VT[:3]
-_SD = ((_flat - _MU) @ _PC.T).std(0)
+def fit_colors(ctx_lat):
+    global _MU, _PC, _SD
+    flat = ctx_lat.reshape(-1, 32).astype(np.float64)
+    _MU = flat.mean(0)
+    _, _, vt = np.linalg.svd(flat - _MU, full_matrices=False)
+    _PC = vt[:3]
+    _SD = ((flat - _MU) @ _PC.T).std(0)
 
 
 def hsl(h, s, l):
@@ -535,7 +547,88 @@ def save(frames, durs, out):
     q[0].save(out, save_all=True, append_images=q[1:], duration=durs, loop=0, disposal=1)
 
 
+# ---------------------------------------------------------------- vertical version for phones: the same frames, re-laid out
+# Every panel is a pixel-exact crop of the horizontal GIF; the four links between them are redrawn in the colour their edge
+# has in the same frame. Top row: encoder <- frames; middle: latent row -> world model -> z; bottom: image + film <- decoder.
+PANELS = dict(                                                        # (x0, y0, x1, y1) in the horizontal GIF
+    deck=(DECK_FX - 1, DECK_FY - (DECK_N - 1) * DECK_OFF - 1, DECK_FX + 127 + (DECK_N - 1) * DECK_OFF, DECK_FY + 148),
+    enc=(X["enc"], BY, X["enc"] + widths["enc"], BY + BH),
+    band=(SLOT_X - 3 * PITCH - 18, LOOP_Y - 10, ZPX + GRID + 4, KEY_Y + 42),        # latent row -> world model -> z, loop
+    dec=(X["dec"], BY, X["dec"] + widths["dec"], BY + BH),
+    out=(OUT_X - 3, OUT_Y - 3, OUT_X + 192, OUT_Y + 189 + 22),
+    film=(R - 4 * FILM_W - 24, FILM_Y, R, FILM_Y + FILM_W),
+    title=(L, FILM_Y + 47, L + tw("TINYWMCRAFT", 4), FILM_Y + 67),
+)
+VW, VM = 540, 16                                                      # canvas width, margin
+
+
+def vertical_layout():
+    """Panel positions (top-left) and the four links as polylines, arrow at the end; returns pos, links, height."""
+    size = {k: (r[2] - r[0], r[3] - r[1]) for k, r in PANELS.items()}
+    bx0, by0 = PANELS["band"][:2]
+    ew, eh = size["enc"]
+    tok2_cx = VM + SLOT_X - 2 * PITCH + GRID // 2 - bx0             # the encoder sits right above the second token
+    enc = (tok2_cx - ew // 2, VM)
+    deck = (enc[0] + ew + 16, VM + PANELS["deck"][1] - BY)           # 16 px apart and AY-aligned, as in the horizontal GIF
+    band = (VM, max(enc[1] + eh, deck[1] + size["deck"][1] + 13))
+    dec = (VW - VM - size["dec"][0], band[1] + size["band"][1] + 2)
+    out = (dec[0] - (PANELS["out"][0] - PANELS["dec"][2]) - size["out"][0], dec[1] + PANELS["out"][1] - BY)
+    film = (out[0] + PANELS["film"][0] - PANELS["out"][0], out[1] + PANELS["film"][1] - PANELS["out"][1])
+    pos = dict(enc=enc, deck=deck, title=(VW - VM - size["title"][0], VM), band=band, dec=dec, out=out, film=film)
+    ay, zp_cx = AY - BY, band[0] + ZPX + GRID // 2 - bx0
+    links = dict(deck_enc=[(deck[0] - 3, enc[1] + ay), (enc[0] + ew, enc[1] + ay)],
+                 enc_row=[(tok2_cx, enc[1] + eh + 2), (tok2_cx, band[1] + GY - 7 - by0)],
+                 zp_dec=[(zp_cx, band[1] + GY + GRID + 6 - by0), (zp_cx, dec[1] - 1)],
+                 dec_out=[(dec[0] - 3, dec[1] + ay), (out[0] + size["out"][0] + 1, dec[1] + ay)])
+    assert deck[0] + size["deck"][0] <= pos["title"][0] - 12 and dec[0] + 20 <= zp_cx <= dec[0] + size["dec"][0] - 20
+    return pos, links, film[1] + size["film"][1] + VM
+
+
+def vertical(src, out):
+    from PIL import ImageSequence
+    pos, links, h = vertical_layout()
+    im = Image.open(src)
+    flat = im.getpalette()                                            # frame 0's palette holds every colour of the GIF
+    rgb_key = lambda a: (a[..., 0].astype(np.int64) << 16) | (a[..., 1].astype(np.int64) << 8) | a[..., 2]
+    keys = rgb_key(np.array(flat, np.uint8).reshape(-1, 3))
+    order = np.argsort(keys, kind="stable")
+    skeys = keys[order]
+    mid = lambda pts: ((pts[0][1] + pts[-1][1]) // 2, (pts[0][0] + pts[-1][0]) // 2)
+    bx0 = PANELS["band"][0]
+    q, durs = [], []
+    for fr in ImageSequence.Iterator(im):
+        durs.append(fr.info["duration"])
+        f = np.array(fr.convert("RGB"))
+        # colours as stored in the source (its palette is approximate): background, and each link as its edge there
+        bg = f[0, 0].copy()
+        col = {k: tuple(int(v) for v in f[mid(E[k])]) for k in links}
+        # the band starts where a fading token still reaches, a few px into the encoder -> row edge: erase that edge
+        blk = f[AY - 5:AY + 5, bx0:E["enc_row"][1][0] + 1]
+        blk[(blk == col["enc_row"]).all(-1)] = bg
+        img = np.zeros((h, VW, 3), np.uint8)
+        img[:] = bg
+        for k, (x, y) in pos.items():
+            x0, y0, x1, y1 = PANELS[k]
+            img[y:y + y1 - y0, x:x + x1 - x0] = f[y0:y1, x0:x1]
+        for k, pts in links.items():
+            edge(img, pts, base=col[k])
+        key = rgb_key(img)                                            # exact palette lookup (quantize() is approximate)
+        i = np.minimum(np.searchsorted(skeys, key), len(skeys) - 1)
+        assert (skeys[i] == key).all(), "a colour outside the source palette"
+        p = Image.fromarray(order[i].astype(np.uint8), "P")
+        p.putpalette(flat)
+        q.append(p)
+    q[0].save(out, save_all=True, append_images=q[1:], duration=durs, loop=0, disposal=1)
+    print(f"{out}: {VW}x{h}, {len(q)} frames, {sum(durs) / 1000:.2f} s, {out.stat().st_size / 1024:.0f} KB")
+
+
 def main():
+    global FRAMES, ACTIONS, CTX_LAT, Z, ZDEC
+    if ARGS.vertical:
+        ARGS.out.parent.mkdir(parents=True, exist_ok=True)
+        return vertical(ARGS.src, ARGS.out)
+    FRAMES, ACTIONS, CTX_LAT, Z, ZDEC = rollout(ARGS.model, ARGS.data, ARGS.seed)
+    fit_colors(CTX_LAT)
     frames, durs = [], []
     for st, d in timeline():
         img = render(st)
