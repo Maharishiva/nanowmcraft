@@ -13,6 +13,9 @@ probabilities and writes one (B, L, N, 3d) gradient tile. Key and value biases a
 cancels in the softmax, a value bias folds into the output projection bias), so the fused block has none.
 norm_mod: adaLN modulation, RMS-normalising in fp32; the backward computes the per-frame scale and shift gradients
 inside the program instead of as reductions over the token axis.
+residual_norm: a gated residual add fused with the next modulated norm, both outputs in one pass.
+attention_one (XLA): the temporal attention of one new frame against cached keys and values of the past.
+polar_express: the orthogonalization of the optimizer, five steps in bf16.
 """
 
 from __future__ import annotations
@@ -451,3 +454,100 @@ def gated_add(h, g, y):
 def gelu(x):
     """The tanh gelu, elementwise in fp32."""
     return _gelu_pallas(x) if _on_gpu() else jax.nn.gelu(x.astype(jnp.float32)).astype(x.dtype)
+
+
+def _resnorm_fwd_kernel(h, g, y, scale, shift, res, norm, *, N, d):
+    f = pl.program_id(0)
+    ix = (pl.ds(f * N, N), slice(None))
+    gate = g[pl.ds(f, 1), :].astype(jnp.float32)
+    value = y[ix].astype(jnp.float32)
+    x = (h[ix].astype(jnp.float32) + gate * value).astype(h.dtype)
+    res[ix] = x
+    x = x.astype(jnp.float32)
+    xh = x * jax.lax.rsqrt(jnp.mean(x * x, -1, keepdims=True) + EPS)
+    z = xh * (1 + scale[pl.ds(f, 1), :].astype(jnp.float32)) + shift[pl.ds(f, 1), :].astype(jnp.float32)
+    norm[ix] = z.astype(norm.dtype)
+
+
+def _resnorm_bwd_kernel(h, g, y, scale, dres, dnorm, dh, dy, dg, ds, dt, *, N, d):
+    f = pl.program_id(0)
+    ix = (pl.ds(f * N, N), slice(None))
+    x, dn = h[ix].astype(jnp.float32), dnorm[ix].astype(jnp.float32)
+    r = jax.lax.rsqrt(jnp.mean(x * x, -1, keepdims=True) + EPS)
+    xh = x * r
+    dn_scaled = dn * (1 + scale[pl.ds(f, 1), :].astype(jnp.float32))
+    dx = (r * (dn_scaled - xh * jnp.mean(dn_scaled * xh, -1, keepdims=True))).astype(h.dtype)
+    dx = (dres[ix] + dx).astype(h.dtype)
+    dh[ix] = dx
+    dy[ix] = (dx.astype(jnp.float32) * g[pl.ds(f, 1), :].astype(jnp.float32)).astype(dy.dtype)
+    dg[pl.ds(f, 1), :] = jnp.sum(dx.astype(jnp.float32) * y[ix].astype(jnp.float32), 0, keepdims=True)
+    ds[pl.ds(f, 1), :] = jnp.sum(dn * xh, 0, keepdims=True)
+    dt[pl.ds(f, 1), :] = jnp.sum(dn, 0, keepdims=True)
+
+
+@jax.custom_vjp
+def _resnorm_pallas(h, g, y, scale, shift):
+    B, L, N, d = h.shape
+    out = jax.ShapeDtypeStruct((B * L * N, d), h.dtype)
+    args = (h.reshape(-1, d), g.reshape(-1, d), y.reshape(-1, d), scale.reshape(-1, d), shift.reshape(-1, d))
+    result = _call(partial(_resnorm_fwd_kernel, N=N, d=d), (B * L,), (out, out), _warps(N * d))(*args)
+    return tuple(v.reshape(h.shape) for v in result)
+
+
+def _resnorm_fwd(h, g, y, scale, shift):
+    out = _resnorm_pallas(h, g, y, scale, shift)
+    return out, (out[0], g, y, scale)
+
+
+def _resnorm_bwd(saved, grad):
+    h, g, y, scale = saved
+    B, L, N, d = h.shape
+    row = jax.ShapeDtypeStruct((B * L * N, d), h.dtype)
+    mod = jax.ShapeDtypeStruct((B * L, d), jnp.float32)
+    args = tuple(v.reshape(-1, d) for v in (h, g, y, scale, *grad))
+    out = _call(partial(_resnorm_bwd_kernel, N=N, d=d), (B * L,), (row, row, mod, mod, mod), _warps(N * d))(*args)
+    dh, dy, dg, ds, dt = out
+    return dh.reshape(h.shape), dg.reshape(g.shape).astype(g.dtype), dy.reshape(y.shape), ds.reshape(scale.shape).astype(scale.dtype), dt.reshape(scale.shape).astype(scale.dtype)
+
+
+_resnorm_pallas.defvjp(_resnorm_fwd, _resnorm_bwd)
+
+
+def residual_norm(h, g, y, scale, shift):
+    """Fused gated residual plus next modulated RMSNorm; fallback supports arbitrary layouts."""
+    if _on_gpu() and h.shape[2] == 16:
+        return _resnorm_pallas(h, g, y, scale, shift)
+    res = gated_add(h, g, y)
+    return res, norm_mod(res, scale, shift)
+
+
+def attention_one(qkv, qbias, cache, slot, heads):
+    """One temporal query against fixed past K/V plus its own current K/V; causal and differentiable."""
+    B, N, width = qkv.shape
+    d, hd = qbias.shape[0], qbias.shape[0] // heads
+    kw = (width - d) // 2
+    expand = lambda x, prefix: jnp.repeat(x.reshape(prefix + (kw // hd, hd)), d // kw, axis=-2)
+    q = (qkv[..., :d].astype(jnp.float32) + qbias).astype(qkv.dtype).reshape((B, N, heads, hd))
+    kn, vn = [expand(x, (B, N)) for x in jnp.split(qkv[..., d:], 2, -1)]
+    k, v = [expand(x, cache.shape[:3]) for x in jnp.split(cache, 2, -1)]
+    scores = jnp.einsum("bnhd,blnhd->bnhl", q, k, preferred_element_type=jnp.float32)
+    current = jnp.sum(q.astype(jnp.float32) * kn.astype(jnp.float32), -1)
+    index = jnp.arange(cache.shape[1])
+    scores = jnp.where(index == slot, current[..., None], scores) * hd ** -.5
+    p = jax.nn.softmax(jnp.where(index <= slot, scores, MASKED), -1).astype(v.dtype)
+    old = jnp.einsum("bnhl,blnhd->bnhd", jnp.where(index != slot, p, 0), v, preferred_element_type=jnp.float32)
+    out = old + p[..., slot, None].astype(jnp.float32) * vn.astype(jnp.float32)
+    return out.reshape((B, N, d)).astype(qkv.dtype)
+
+
+def polar_express(g):
+    'Five-step Polar Express in bf16, with fp32 normalization and optimizer state.'
+    coeffs = ((8.15655, -22.48329, 15.87877), (4.04293, -2.80892, 0.500018),
+              (3.89167, -2.77248, 0.506065), (3.28575, -2.36813, 0.464490), (2.34654, -1.70978, 0.423236))
+    x = (g / (1.02 * jnp.linalg.norm(g, axis=(-2, -1), keepdims=True) + 1e-7)).astype(jnp.bfloat16)
+    tall = x.shape[-2] > x.shape[-1]
+    x = jnp.swapaxes(x, -2, -1) if tall else x
+    for a, b, c in coeffs:
+        aa = x @ jnp.swapaxes(x, -2, -1)
+        x = a * x + (b * aa + c * (aa @ aa)) @ x
+    return (jnp.swapaxes(x, -2, -1) if tall else x).astype(jnp.float32)
