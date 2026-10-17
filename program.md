@@ -3,7 +3,7 @@
 How to beat tinywmcraft, for people and for coding agents.
 
 The goal: a lower gFVD than the best so far (iteration 3, 42.5 ± 2.1, shown times 10^4) from one 10-minute A100 run, without making action following, rewards or episode ends worse.
-Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/#benchmark).
+Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
 
 ## Rules
 
@@ -54,6 +54,7 @@ Exploratory runs can use any GPU and any seed; timings from other GPUs are only 
 1. Open a pull request with your changes. The template asks for the three `ledger.jsonl` rows and links to the three `model.npz` files on Hugging Face, so anyone can play and score them.
 2. The maintainer retrains the three seeds from the pull request on a Colab A100 next to the best so far.
 3. If the rerun passes the gates, the maintainer adds it to `docs/records.jsonl` as the next iteration and merges. The benchmark on the site updates with the merge and credits you with a link to the pull request.
+4. The crown goes next to your GitHub login, and your model becomes the one the site plays. If it does not export to the browser with `docs/export_web.py`, the maintainer helps.
 
 ## Open problems
 
