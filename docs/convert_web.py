@@ -460,6 +460,18 @@ class Kernel:
             return f'let j = u32({j}); return {self.call(d, f"j * {inner}u{r}")};'
         raise NotImplementedError(op)
 
+    def raw_int8(self, t):
+        """With one scale per output channel (--int8, --group 0), the weight operand of a matmul or conv as its integers,
+        and a function of the output column giving ' * scale' for the kernel's accumulated sum; (f(t), '') otherwise."""
+        t = self.G.B(t)
+        if t not in self.G.q8 or OPT['group']:
+            return self.f(t), lambda col: ''
+        if ('q', t) not in self.fns:
+            name = self.fns[('q', t)] = f'f{len(self.fns)}'
+            self.lines.append(f'fn {name}(i: u32) -> f32 {{ let j = {self.slot(("Q", t))} + i; '
+                              f'return f32((bitcast<i32>(Q[j >> 2u]) << ((3u - (j & 3u)) << 3u)) >> 24u); }}')
+        return self.fns[('q', t)], lambda col: f' * W[{self.slot(("S", t))} + {col}]'
+
     def source(self, main):
         return '\n'.join(self.lines) + '\n' + main
 
@@ -555,14 +567,14 @@ def build(G):
         TM, TN, TK, RM, RN = tiles(M, N, K)
         WX, WY = TN // RN, TM // RM
         NT = WX * WY
-        la, lb = k.f(n.input[0]), k.f(n.input[1])
+        la, (lb, sc) = k.f(n.input[0]), k.raw_int8(n.input[1])
         alpha, beta = attrs(n).get('alpha', 1.0), attrs(n).get('beta', 1.0)
         bias = ''
         if n.op_type == 'Gemm' and len(n.input) > 2 and n.input[2] and beta != 0:
             bias = f' + {lit(beta) + " * " if beta != 1 else ""}{k.call(n.input[2], bidx((M, N), G.shape[n.input[2]], "oi"))}'
         fr = k.f(R)
         if M == 1 and K <= 2048:       # the row in workgroup memory: at most 8 KB
-            return gemv(k, R, fr, la, lb, bias, alpha, B1, B2, N, K, sa, sb, so)
+            return gemv(k, R, fr, la, lb, bias, alpha, B1, B2, N, K, sa, sb, so, sc)
         mk, kk_, nk = M % TM, K % TK, N % TN     # bounds checks only where a tile can run off the edge
 
         def loads(total, body):
@@ -596,7 +608,7 @@ def build(G):
         for r in range(RM):
             for c in range(RN):
                 g = cond(mk and f'm < {M}u', nk and f'nn < {N}u')
-                body = (f'let oi = bo + {lin(so[2:], ["m", "nn"])}; ACC = {lit(alpha) + " * " if alpha != 1 else ""}c{r}_{c}{bias}; '
+                body = (f'let oi = bo + {lin(so[2:], ["m", "nn"])}; ACC = {lit(alpha) + " * " if alpha != 1 else ""}c{r}_{c}{sc("nn")}{bias}; '
                         + store(k, R, f'{fr}(oi)', 'oi'))
                 epi.append(f'{{ let m = m0 + lid.y{f" + {r * WY}u" if r else ""}; let nn = n0 + lid.x{f" + {c * WX}u" if c else ""}; '
                            + (f'if ({g}) {{ {body} }} }}' if g else f'{body} }}'))
@@ -623,7 +635,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
 }}"""
         return k, main, ((N + TN - 1) // TN, (M + TM - 1) // TM, B1 * B2)
 
-    def gemv(k, R, fr, la, lb, bias, alpha, B1, B2, N, K, sa, sb, so):
+    def gemv(k, R, fr, la, lb, bias, alpha, B1, B2, N, K, sa, sb, so, sc):
         """one row: the row in shared memory, K split over KS threads per column, 4 independent sums per thread."""
         TN, KS = TILE.get('gv', (64, 4))
         TN = min(TN, pow2(N))
@@ -653,7 +665,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
   workgroupBarrier();
   if (lid.y == 0u && {g}) {{
     var t = 0.0; for (var j = 0u; j < {KS}u; j++) {{ t += red[j * {TN}u + lid.x]; }}
-    let oi = bo + n * {so[3]}u; ACC = {lit(alpha) + " * " if alpha != 1 else ""}t{bias};
+    let oi = bo + n * {so[3]}u; ACC = {lit(alpha) + " * " if alpha != 1 else ""}t{sc("n")}{bias};
     {store(k, R, f"{fr}(oi)", "oi")}
   }}
 }}"""
@@ -669,7 +681,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
         KH, KW = G.shape[w][2:]
         s = a.get('strides', [1, 1])
         assert a.get('group', 1) == 1 and a.get('dilations', [1, 1]) == [1, 1] and so[0] == 1
-        fx, fw = k.f(x), k.f(w)
+        fx, (fw, sc) = k.f(x), k.raw_int8(w)
         bias = f' + {k.call(n.input[2], "co")}' if len(n.input) > 2 and n.input[2] else ''
         if n.op_type == 'Conv':
             ap = a.get('auto_pad', b'NOTSET')
@@ -697,7 +709,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid:
                 f'  let oi = g.x; if (oi >= {cnt}u) {{ return; }}\n'
                 f'  let co = oi / {Ho * Wo}u; let oy = (oi / {Wo}u) % {Ho}u; let ox = oi % {Wo}u;\n  var acc = 0.0;\n'
                 f'  for (var ci = 0u; ci < {Ci}u; ci++) {{ for (var ky = 0u; ky < {KH}u; ky++) {{ for (var kx = 0u; kx < {KW}u; kx++) {{\n'
-                f'      {inner}\n  }} }} }}\n  ACC = acc{bias};\n  {store(k, R, f"{fr}(oi)", "oi")}\n}}')
+                f'      {inner}\n  }} }} }}\n  ACC = acc{sc("co")}{bias};\n  {store(k, R, f"{fr}(oi)", "oi")}\n}}')
         return k, main, ((cnt + 63) // 64, 1, 1)
 
     def red_kernel(R):
