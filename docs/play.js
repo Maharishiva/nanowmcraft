@@ -64,12 +64,11 @@ const TOUCH = matchMedia('(pointer: coarse)').matches;
 const BOARD = [[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], RX = 52;
 const KB = TOP + 64, CH = KB + 19;
 // the same keys as buttons, the size of the action keys, each at row, column, columns spanned: ACTION about two keys wide,
-// up to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens.
-// META: the seed and step, two lines in the free part of W's row
+// up to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens
 const GRID = {
-  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 2], META: [1, 3, 3] },
-  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 3], META: [1, 3, 4] },
-  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3], META: [1, 1, 4] },
+  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 2] },
+  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 3] },
+  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3] },
 };
 const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'ACTION']];
 const READY = TOUCH ? 'Tap the map to walk' : 'WASD to move, SPACE to act';   // after the tutorial
@@ -94,9 +93,9 @@ const root = document.getElementById('play');
 const pix = (s, color = CAP, cls = 'px', u = '--fp') => `<img class="${cls}" src="${label(s, color)}" style="height:calc(var(${u}) * 5)" alt="">`;
 // the action keys show their icons, NOOP its name in the pixel font; ACTION and NOOP get their own font pixel (fit)
 const icon = a => a === 0 ? pix('NOOP', CAP, 'px', '--np') : `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">`;
-root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div>
-<div class="banner" hidden></div></div>
-<div class="keys"><canvas class="meta" width="47" height="11"></canvas>${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${a === 5 ? 'action (space)' : NAMES[a]}">` +
+root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas>
+<canvas class="meta" width="47" height="11"></canvas><div class="msg"></div><div class="banner" hidden></div></div>
+<div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${a === 5 ? 'action (space)' : NAMES[a]}">` +
   `${pix(k, CAP, 'px', a === 5 ? '--ap' : '--px')}</button>`).join('')}</div>
 <div class="st"></div></div>
 <div class="side"><div class="acts">${ICONS.map(a => `<button class="key" data-a="${a}" title="${NAMES[a]}">` +
@@ -113,6 +112,7 @@ const ctx = canvas.getContext('2d', { willReadFrequently: true });
 let session, z, tau, act, fill = 0, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
 let best = +localStorage.getItem('tinywmcraft.best') || 0;
 let seed = 0, calls = 0;   // this world's seed; model calls in this world, the noise counter
+let px = 1;   // screen pixels per game pixel (fit)
 let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' once the run is over; saving: someone waits
 // for the clip, so its progress shows
 // the tutorial: on a first visit or asked for with ?tut=; coach: the running one
@@ -126,20 +126,19 @@ const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on ph
 
 function fit() {  // the largest integer scale that fits. Every key is one size, one game pixel apart: beside the game the action
   // keys span the map and the three buttons, stacked, end with the movement keys under the frame (63 + 1 + 11.5 + 1 + 11.5 = 88);
-  // under the game everything sits on one grid of six columns. The seed and step (meta) sit in the free part of W's row,
-  // their font pixel half a game pixel
+  // under the game everything sits on one grid of six columns
   const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
   const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
-  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6, fp = Math.max(1, s >> 1);
+  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;
+  px = s;
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
   const grid = GRID[row ? 'row' : TOUCH ? 'right' : 'left'];
   Object.assign(keys.style, { gridTemplateColumns: row ? `repeat(4, ${b}px) ${59 * s - 4 * b}px` : `repeat(6, ${b}px)`,
     gridAutoRows: b + 'px', gap: s + 'px', marginTop: s + 'px' });
-  for (const el of [...keys.querySelectorAll('.key'), meta]) {
-    const [r, c, n] = grid[el.dataset.k ?? 'META'];
+  for (const el of keys.querySelectorAll('.key')) {
+    const [r, c, n] = grid[el.dataset.k];
     el.style.gridArea = `${r} / ${c} / span 1 / span ${n}`;
   }
-  Object.assign(meta.style, { width: meta.width * fp + 'px', height: meta.height * fp + 'px' });
   Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
     marginTop: row ? TOP * s + 'px' : '' });
   Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
@@ -150,6 +149,7 @@ function fit() {  // the largest integer scale that fits. Every key is one size,
   const aw = keys.querySelector('[data-k="ACTION"]').getBoundingClientRect().width;   // ACTION: 23 font pixels, clear of the edge
   root.style.setProperty('--ap', Math.max(1, Math.min(s, Math.floor((aw - 4 * s) / 23))) + 'px');
   msg.style.padding = `${TOP * s}px 16px 0`;   // what shows over the game sits on the frame
+  tagged();
   coach?.layout();
 }
 
@@ -201,11 +201,20 @@ function tag(c, f, x0, x1, y, u = 1) {  // the line under the keys in clips: the
   text(m, x1 - u * (4 * m.length - 1), y, CAP, c, u);
 }
 
-function tagged(f = frames.at(-1) ?? { seed: null, moves }) {  // the seed and step on the page: two lines, the seed on top
+function tagged(f = frames.at(-1) ?? { seed: null, moves, score, best }) {  // the seed and step on the page: two lines,
+  // the seed on top, centred in the score strip between SCORE and HI, a font pixel of at most half a game pixel; without
+  // the words SEED and STEP when the gap is too narrow for them at two screen pixels a font pixel
+  const a = 24 + 4 * String(f.score).length, b = 62 - 4 * `HI ${f.best}`.length;   // the gap, in game pixels
+  const room = Math.max(0, b - a - 2) * px, code = f.seed === null ? '' : seedCode(f.seed), top = Math.max(1, px >> 1);
+  const width = ls => Math.max(...ls.map(l => 4 * l.length - 1));
+  let lines = [code && `SEED ${code}`, `STEP ${f.moves}`];
+  if (room / width(lines) < Math.min(2, top)) lines = [code, String(f.moves)];
+  const w = width(lines), fp = Math.max(1, Math.min(top, Math.floor(room / w)));
+  [meta.width, meta.height] = [w, 11];
   const c = meta.getContext('2d');
-  c.clearRect(0, 0, meta.width, meta.height);
-  if (f.seed !== null) text(`SEED ${seedCode(f.seed)}`, 0, 0, CAP, c);
-  text(`STEP ${f.moves}`, 0, 6, CAP, c);
+  lines.forEach((l, i) => text(l, (w - 4 * l.length + 1) >> 1, 6 * i, CAP, c));
+  Object.assign(meta.style, { width: w * fp + 'px', height: 11 * fp + 'px', left: (a + b) / 2 * px - w * fp / 2 + 'px',
+    top: (TOP * px - 11 * fp) / 2 + 'px' });
 }
 
 function keyboard(c, a, r) {  // the keys under the frame in clips, the pressed one in orange; a square filled by the reward
@@ -296,7 +305,7 @@ function reset(s = randomSeed()) {  // a new world, seed s (random unless given)
   gemOff();
   banner.hidden = true;
   paint(ctx, { rgb: new Uint8Array(RGB), score, best, moves, end, diamond });
-  tagged({ seed: null, moves });
+  tagged({ seed: null, moves, score, best });
   if (session) begin().catch(fail);
 }
 

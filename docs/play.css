@@ -3,7 +3,7 @@
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 #play .view { position: relative; }
 #play canvas { display: block; width: 100%; image-rendering: pixelated; cursor: pointer; }
-#play canvas.meta { cursor: default; align-self: center; justify-self: start; }   /* the seed and step in W's row, sized by play.js */
+#play canvas.meta { position: absolute; pointer-events: none; }   /* the seed and step in the score strip, placed by play.js */
 #play .msg { position: absolute; inset: 0; box-sizing: border-box; padding: 16px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;
   background: #0a0a0add; }
