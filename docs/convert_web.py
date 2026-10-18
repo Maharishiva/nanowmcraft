@@ -878,6 +878,17 @@ def layout(G, P, kernels):
                 arena=peak, n16=top16, n32=top32, n8=blob8.size, params=params), blob16, blob32, blob8
 
 
+def write_int8_onnx(G, src, out):
+    """The ONNX graph with each int8 weight's fp16 initializer replaced by its dequantized values (fp32)."""
+    m = onnx.load(src)
+    casts = {n.output[0]: n.input[0] for n in m.graph.node if n.op_type == 'Cast'}
+    inits = {i.name: i for i in m.graph.initializer}
+    for t in G.q8:
+        name = casts[t] if casts.get(t) in inits else t
+        inits[name].CopyFrom(numpy_helper.from_array(G.const[t].astype(np.float32), name))
+    onnx.save(m, out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--onnx', default=str(DOCS / 'play.onnx'))
@@ -887,12 +898,16 @@ def main():
     ap.add_argument('--int8', action='store_true', help='matmul and conv weights as int8 with fp32 scales (quantize())')
     ap.add_argument('--group', type=int, default=0, help='--int8: one scale per this many inputs (0: per output channel)')
     ap.add_argument('--int8-min', type=int, default=16384, help='--int8: smallest weight (elements) made int8')
+    ap.add_argument('--int8-onnx', help='--int8: also write the ONNX graph with these int8 weights as fp32 (what this '
+                                        'file computes; replay.py --onnx judges runs on it)')
     a = ap.parse_args()
     TILE.update({k: tuple(v) if isinstance(v, list) else v for k, v in json.loads(a.tile).items()})
     OPT.update(f16=not a.f32, group=a.group)
     G = Graph(a.onnx)
     if a.int8:
         G.mark_int8(a.group, a.int8_min)
+        if a.int8_onnx:
+            write_int8_onnx(G, a.onnx, a.int8_onnx)
     P, kernels = build(G)
     L, b16, b32, b8 = layout(G, P, kernels)
     shaders, sidx, disp = [], {}, []
