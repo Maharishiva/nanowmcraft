@@ -14,10 +14,8 @@ const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 // The model the site plays: play.wgr made by export_web.py and convert_web.py from the best checkpoint, at a pinned
-// revision so the cached copy stays valid.
-// NOTE: the pinned file below is the old graph without slot inputs, which the player refuses: upload the slot graph
-// (docs/play.wgr of export_web.py at this commit) and pin it here before deploying.
-const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft/resolve/941e9c1dba3564f89fd5fbfc3c2b8477fc29a8ce/web/play.wgr';
+// revision so the cached copy stays valid. It is the slot graph (inputs pos, prev, kmask), sha256 70a2ef1c.
+const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft/resolve/68a61736aba7de231574b7cfef62cf50591e02d1/web/play.wgr';
 const q = new URLSearchParams(location.search);
 // ?model= loads another file; served from this machine, it plays docs/play.wgr, fetched fresh every time
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
