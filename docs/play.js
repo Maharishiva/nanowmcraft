@@ -61,14 +61,17 @@ const NAMES = ['noop', 'left', 'right', 'up', 'down', 'action', 'sleep', 'place 
   'make stone sword', 'make iron sword'];
 const TOUCH = matchMedia('(pointer: coarse)').matches;
 // the keyboard of play.gif under the frame in clips: action, x, y, width of each key (-1 shows any other key pressed), and
-// the reward square's x; ACTION exactly as wide as the two boxes above it
+// the reward square's x; ACTION exactly as wide as the two boxes above it. Its top row is one pixel under the frame (KB);
+// the clip's frames end with it (CH), then the seed and step line
 const BOARD = [[3, 13, 0, 9], [1, 3, 10, 9], [4, 13, 10, 9], [2, 23, 10, 9], [5, 33, 10, 28], [-1, 33, 0, 18]], RX = 52;
+const KB = TOP + 64, CH = KB + 19;
 // the same keys as buttons, the size of the action keys, each at row, column, columns spanned: ACTION about two keys wide,
-// up to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens
+// up to the frame's edge, beside the frame; three under it on the action keys' six columns, WASD on the right on touch screens.
+// META: the seed and step, two lines in the free part of W's row
 const GRID = {
-  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 2] },
-  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 3] },
-  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3] },
+  row: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 2], META: [1, 3, 3] },
+  left: { W: [1, 2, 1], A: [2, 1, 1], S: [2, 2, 1], D: [2, 3, 1], ACTION: [2, 4, 3], META: [1, 3, 4] },
+  right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3], META: [1, 1, 4] },
 };
 const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'ACTION']];
 const READY = TOUCH ? 'Tap the map to walk' : 'WASD to move, SPACE to act';   // after the tutorial
@@ -94,8 +97,8 @@ const pix = (s, color = CAP, cls = 'px', u = '--fp') => `<img class="${cls}" src
 // the action keys show their icons, NOOP its name in the pixel font; ACTION and NOOP get their own font pixel (fit)
 const icon = a => a === 0 ? pix('NOOP', CAP, 'px', '--np') : `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">`;
 root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div>
-<div class="banner" hidden></div></div><canvas class="meta" height="5"></canvas>
-<div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${a === 5 ? 'action (space)' : NAMES[a]}">` +
+<div class="banner" hidden></div></div>
+<div class="keys"><canvas class="meta" width="47" height="11"></canvas>${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${a === 5 ? 'action (space)' : NAMES[a]}">` +
   `${pix(k, CAP, 'px', a === 5 ? '--ap' : '--px')}</button>`).join('')}</div>
 <div class="st"></div></div>
 <div class="side"><div class="acts">${ICONS.map(a => `<button class="key" data-a="${a}" title="${NAMES[a]}">` +
@@ -125,27 +128,24 @@ const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on ph
 
 function fit() {  // the largest integer scale that fits. Every key is one size, one game pixel apart: beside the game the action
   // keys span the map and the three buttons, stacked, end with the movement keys under the frame (63 + 1 + 11.5 + 1 + 11.5 = 88);
-  // under the game everything sits on one grid of six columns. Under the frame, before the keys: the seed and step line
-  // (meta), its font pixel half a game pixel; beside the game the three buttons grow by its height, so the side still
-  // ends with the movement keys
+  // under the game everything sits on one grid of six columns. The seed and step (meta) sit in the free part of W's row,
+  // their font pixel half a game pixel
   const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
-  const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / (H + 4))));
-  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6, fp = Math.max(1, s >> 1), mh = s + 5 * fp;
+  const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
+  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6, fp = Math.max(1, s >> 1);
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
-  meta.width = Math.floor(63 * s / fp);
-  Object.assign(meta.style, { width: meta.width * fp + 'px', height: 5 * fp + 'px', marginTop: s + 'px' });
-  tagged();
   const grid = GRID[row ? 'row' : TOUCH ? 'right' : 'left'];
   Object.assign(keys.style, { gridTemplateColumns: row ? `repeat(4, ${b}px) ${59 * s - 4 * b}px` : `repeat(6, ${b}px)`,
     gridAutoRows: b + 'px', gap: s + 'px', marginTop: s + 'px' });
-  for (const el of keys.querySelectorAll('.key')) {
-    const [r, c, n] = grid[el.dataset.k];
+  for (const el of [...keys.querySelectorAll('.key'), meta]) {
+    const [r, c, n] = grid[el.dataset.k ?? 'META'];
     el.style.gridArea = `${r} / ${c} / span 1 / span ${n}`;
   }
+  Object.assign(meta.style, { width: meta.width * fp + 'px', height: meta.height * fp + 'px' });
   Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
     marginTop: row ? TOP * s + 'px' : '' });
   Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
-    gridAutoRows: (row ? 12 * s + mh / 3 : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to ACTION's bottom
+    gridAutoRows: (row ? 12 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to ACTION's bottom
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
   root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
   root.style.setProperty('--np', Math.max(1, Math.floor(b / 20)) + 'px');   // NOOP: 15 font pixels in three quarters of a key
@@ -195,26 +195,25 @@ function head(c, f) {  // the score and the best score
   text(String(f.score), text('SCORE', 2, 1, CAP, c) + 2, 1, f.r > 0.5 ? ORANGE : FG, c);
   const right = `HI ${f.best}`;
   text(right, 62 - 4 * right.length, 1, CAP, c);
-  c.fillStyle = EDGE;   // a line along the bottom
-  c.fillRect(0, TOP - 1, 63, 1);
 }
 
-function tag(c, f, x0, x1, y, u = 1) {  // the line under the frame: the seed on the left, the step on the right
-  if (f.seed !== null) text(`SEED ${seedCode(f.seed)}`, x0, y, CAP, c, u);
+function tag(c, f, x0, x1, y, u = 1) {  // the line under the keys in clips: the seed on the left, the step on the right
+  text(`SEED ${seedCode(f.seed)}`, x0, y, CAP, c, u);
   const m = `STEP ${f.moves}`;
   text(m, x1 - u * (4 * m.length - 1), y, CAP, c, u);
 }
 
-function tagged(f = frames.at(-1) ?? { seed: null, moves }) {  // the line on the page
+function tagged(f = frames.at(-1) ?? { seed: null, moves }) {  // the seed and step on the page: two lines, the seed on top
   const c = meta.getContext('2d');
   c.clearRect(0, 0, meta.width, meta.height);
-  tag(c, f, 0, meta.width, 0);
+  if (f.seed !== null) text(`SEED ${seedCode(f.seed)}`, 0, 0, CAP, c);
+  text(`STEP ${f.moves}`, 0, 6, CAP, c);
 }
 
 function keyboard(c, a, r) {  // the keys under the frame in clips, the pressed one in orange; a square filled by the reward
-  const y0 = TOP + 66;
+  const y0 = KB;
   c.fillStyle = BG;
-  c.fillRect(0, TOP + 63, 63, 25);
+  c.fillRect(0, TOP + 63, 63, CH - TOP - 63);
   const other = a !== undefined && !BOARD.some(b => b[0] === a);
   for (const [k, x, y, w] of BOARD) {
     const on = k < 0 ? other : k === a, cap = k < 0 ? (other ? CAPS[a] : '') : CAPS[k];
@@ -268,7 +267,7 @@ function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip (the l
 
 function card(c, f) {  // the last screen of every clip: the score to beat, or the step the diamond came on
   c.fillStyle = BG;
-  c.fillRect(0, 0, 63, H);
+  c.fillRect(0, 0, 63, CH);
   const mid = (s, y, color, u = 1) => text(s, (63 - u * (4 * s.length - 1)) >> 1, y, color, c, u);
   const steps = n => `${n} STEP${n === 1 ? '' : 'S'}`;
   mid('MY SCORE', 14, CAP);
@@ -457,18 +456,18 @@ async function step(a) {  // results of a step started before a reset are droppe
 }
 
 async function encode() {  // the run as an MP4: the link on top, the frames 8x nearest-neighbour, the seed and step line
-  // under them; at most a minute of frames, then the score card
+  // just under the keys; at most a minute of frames, then the score card
   const fs = frames.slice(), d = new Date(), p2 = n => String(n).padStart(2, '0');   // play goes on while it encodes
   const name = `tinywmcraft-${fs.at(-1).diamond ? 'diamond' : 'score'}-${score}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
     `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.mp4`;
   const { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } = await (mux ??= import(MEDIABUNNY));
-  const G = 8, LINE = 5, U = 3, out = document.createElement('canvas'), one = document.createElement('canvas');
-  [out.width, out.height, one.width, one.height] = [63 * G, (LINE + H + LINE) * G, 63, H];
+  const G = 8, LINE = 5, U = 3, TAG = 3, out = document.createElement('canvas'), one = document.createElement('canvas');
+  [out.width, out.height, one.width, one.height] = [63 * G, (LINE + CH + TAG) * G, 63, CH];
   const c = out.getContext('2d'), y = (LINE * G - 5 * U) >> 1, x = (out.width - U * (4 * LINK.join('').length - 1)) >> 1;
-  const foot = (LINE + H) * G, under = f => {   // the seed and the step, as on the page
+  const foot = (LINE + CH) * G, under = f => {   // the seed and the step, from the keys' left edge to their right one
     c.fillStyle = BG;
-    c.fillRect(0, foot, out.width, LINE * G);
-    tag(c, f, 2 * G, out.width - 2 * G, foot + y, U);
+    c.fillRect(0, foot, out.width, TAG * G);
+    tag(c, f, 3 * G, 61 * G, foot + 4, U);
   };
   c.imageSmoothingEnabled = false;
   c.fillStyle = BG;
@@ -481,13 +480,13 @@ async function encode() {  // the run as an MP4: the link on top, the frames 8x 
   await output.start();
   for (const [i, f] of fs.entries()) {
     paint(oc, f, true);
-    c.drawImage(one, 0, LINE * G, out.width, H * G);
+    c.drawImage(one, 0, LINE * G, out.width, CH * G);
     under(f);
     await source.add(i / fps, i === fs.length - 1 ? 1.5 : 1 / fps);
     if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / fs.length)}%`);
   }
   card(oc, fs.at(-1));
-  c.drawImage(one, 0, LINE * G, out.width, H * G);
+  c.drawImage(one, 0, LINE * G, out.width, CH * G);
   await source.add((fs.length - 1) / fps + 1.5, 2.5);
   await output.finalize();
   return new File([output.target.buffer], name, { type: 'video/mp4' });
