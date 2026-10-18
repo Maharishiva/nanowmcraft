@@ -60,4 +60,4 @@ Exploratory runs can use any GPU and any seed; timings from other GPUs are only 
 
 - **Rare events.** Diamonds, iron tools, eating plants and deaths are a small share of the data, and a quarter of the eval clips hold one. A model that gets them right scores better, and makes the [challenge](https://maharishiva.github.io/tinywmcraft/#challenge) in the browser fairer.
 - **Cheaper sampling.** Eight Euler steps per frame. Fewer steps, better solvers, distillation, or a model that is not flow matching at all could free eval time and let a bigger model train.
-- **Long horizons.** The benchmark scores 64 frames; a run in the browser lasts up to 1000 moves. Anything that keeps the world coherent longer shows in the player first.
+- **Long horizons.** The benchmark scores 64 frames; the browser plays endless generated worlds. Anything that keeps the world coherent longer shows in the player first.
