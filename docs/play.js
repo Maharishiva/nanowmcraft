@@ -3,9 +3,10 @@
 // The network runs on wgr.js, a small WebGPU runtime in plain JS and WGSL made for this one graph (no onnxruntime, no wasm:
 // WebKit needed 0.5 to 1.1 GB to compile onnxruntime's 17 to 27 MB of wasm, close to all iOS allows a page)
 import { create } from './wgr.js';
-import { inventory, facing } from './hud.js';
+import { inventory, facing, fresh } from './hud.js';
 import { tutorial } from './tutorial.js';
 import { asleep } from './sleep.js';
+import { noise, PAST, NOISE_BUF, RNOISE } from './seeded.js';
 
 const X_HANDLE = '';   // the X handle the diamond caption ends with, when set
 const GITHUB = 'github.com/Maharishiva/tinywmcraft';
@@ -13,23 +14,40 @@ const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 // The model the site plays: play.wgr made by export_web.py and convert_web.py from the best checkpoint, at a pinned
-// revision so the cached copy stays valid. starts.bin (next to this file) comes from the same checkpoint: change both.
+// revision so the cached copy stays valid.
+// NOTE: the pinned file below is the old graph without slot inputs, which the player refuses: upload the slot graph
+// (docs/play.wgr of export_web.py at this commit) and pin it here before deploying.
 const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft/resolve/941e9c1dba3564f89fd5fbfc3c2b8477fc29a8ce/web/play.wgr';
 const q = new URLSearchParams(location.search);
-// ?model= and ?starts= load other files; served from this machine, it plays docs/play.wgr, fetched fresh every time
+// ?model= loads another file; served from this machine, it plays docs/play.wgr, fetched fresh every time
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
 const MODEL = q.get('model') ?? (LOCAL || !HF_MODEL ? 'play.wgr' : HF_MODEL);
-const STARTS = q.get('starts') ?? 'starts.bin';
-// The tutorial's world, the first one on a first visit (?tut=1 or ?tut=a, ?tut=b: again, in look a or b): start 18 of
-// starts.bin, bright day, no wood yet, a tree three tiles straight up over open grass and one more up and to the right.
-// Pick another one if starts.bin changes.
-const TUT_START = STARTS === 'starts.bin' ? 18 : -1;
+// Every world begins from a first frame the model imagines from noise at window slot 0, after a noop; the window fills
+// from slot 0 as in training, then slides. The sampler's noise is seeded (seeded.js), a new random seed for every world,
+// shown as four characters of SEED_ABC, most significant first (no I, L, O or U): ?seed=00JT (any case) opens world
+// 602 again, the same first frame and, with the same keys, the same frames
+const SEED_ABC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ', SEEDS = 32 ** 4;   // seeds 0..1048575
+const seedCode = s => [15, 10, 5, 0].map(b => SEED_ABC[(s >> b) & 31]).join('');
+const parseSeed = c => {   // a seed code as its number; null if it is not one
+  const s = (c ?? '').toUpperCase();
+  return s.length === 4 && [...s].every(ch => SEED_ABC.includes(ch)) ? [...s].reduce((n, ch) => 32 * n + SEED_ABC.indexOf(ch), 0) : null;
+};
+const SEED = parseSeed(q.get('seed'));        // the world asked for; none or an invalid code: a random one
+const REROLL = 20;                             // imagined first frames tried at most: the next seed until one is fresh
+// The tutorial's world, the first one on a first visit (?tut=1 or ?tut=a, ?tut=b: again, in look a or b): seed 00JT,
+// bright day, nothing held, a short row of trees straight up from two tiles away over open grass; the walkthrough is
+// done in 5 steps at best (up, chop, up, chop, table; a second chop at the first tree gives nothing). Picked from the
+// imagined first frames of 1500 seeds. Pick another one if the model changes.
+const TUT_SEED = 602;
 const TUT = q.get('tut'), LOOK = TUT === 'b' ? 'b' : 'a';
 const SLEEP_MAX = 400;                         // steps skipped in one sleep at most
 const SLEEP_STEP_MS = 60, SLEEP_SHOW_MS = 1500; // skipped steps at most ~16 a second; the sleep banner stays at least 1.5 s
 const DIAMOND_SURE = 600;                      // a diamond is read when the next best count is this much worse (hud.js)
 const DONE_THRESHOLD = 0.5;                   // done probability that ends the episode
-const MOVES = 1000, MAX_SCALE = 7;            // moves in a run, then it ends; largest pixel scale
+const MAX_SCALE = 7;                          // largest pixel scale
+// a run goes on until it dies; clips keep its last CLIP steps (older ones go, so memory stays flat) at FPS, faster
+// when the frames would take longer than CLIP_S seconds (3000 steps: 50 fps)
+const CLIP = 3000, FPS = 12, CLIP_S = 60;
 const L = 31 * 512, RGB = 63 * 63 * 3;        // one 31-frame latent window, one frame
 const TOP = 7, H = TOP + 88, MAP = 49;        // the score strip, the frame, the keys under it; the map part of the frame
 const BG = '#0a0a0a', FG = '#f0f0ee', ORANGE = '#ff6a13', KEY = '#1c1c1e', EDGE = '#3a3a3e', CAP = '#aaaaa8';
@@ -64,6 +82,7 @@ const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   O: '010101101101010', U: '101101101101111', V: '101101101101010', Y: '101101010010010', '.': '000000000000010',
   '/': '001001010100100', 0: '111101101101111', 7: '111001001001001', 8: '111101111101111', 9: '111101111001111',
   ' ': '000000000000000', '!': '010010010000010', L: '100100100100111', '?': '111001010000010',
+  J: '001001001101010', K: '101101110101101', X: '101101010101101', Z: '111001010100111',
 };
 // the clip goes to the system share sheet on phones and tablets that share files; computers get a post on X and a download
 const FILES = TOUCH && !!navigator.canShare?.({ files: [new File([''], 'x.mp4', { type: 'video/mp4' })] });
@@ -75,7 +94,7 @@ const pix = (s, color = CAP, cls = 'px', u = '--fp') => `<img class="${cls}" src
 // the action keys show their icons, NOOP its name in the pixel font; ACTION and NOOP get their own font pixel (fit)
 const icon = a => a === 0 ? pix('NOOP', CAP, 'px', '--np') : `<img src="icons/${NAMES[a].replaceAll(' ', '_')}.png" alt="${NAMES[a]}">`;
 root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" height="${TOP + 63}"></canvas><div class="msg"></div>
-<div class="banner" hidden></div></div>
+<div class="banner" hidden></div></div><canvas class="meta" height="5"></canvas>
 <div class="keys">${MOVE.map(([a, k]) => `<button class="key" data-a="${a}" data-k="${k}" title="${a === 5 ? 'action (space)' : NAMES[a]}">` +
   `${pix(k, CAP, 'px', a === 5 ? '--ap' : '--px')}</button>`).join('')}</div>
 <div class="st"></div></div>
@@ -86,29 +105,36 @@ root.innerHTML = `<div class="screen"><div class="view"><canvas width="63" heigh
 <button class="key" data-a="reset" title="new world">${pix('NEW WORLD')}</button></div></div>`;
 const canvas = root.querySelector('canvas'), msg = root.querySelector('.msg'), st = root.querySelector('.st');
 const keys = root.querySelector('.keys'), acts = root.querySelector('.acts'), btns = root.querySelector('.btns');
-const banner = root.querySelector('.banner');
+const banner = root.querySelector('.banner'), meta = root.querySelector('.meta');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-let session, starts, z, tau, act, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
+// fill: frames in the window, the slot the next one goes to (31 once it is full)
+let session, z, tau, act, fill = 0, mux, made, frames = [], tick = 0, score = 0, moves = 0, episode = 0;
 let best = +localStorage.getItem('tinywmcraft.best') || 0;
-let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' or 'time' once the run is over; saving: someone
-// waits for the clip, so its progress shows
+let seed = 0, calls = 0;   // this world's seed; model calls in this world, the noise counter
+let busy = false, end = '', saving = false;   // end: '' while playing, 'dead' once the run is over; saving: someone waits
+// for the clip, so its progress shows
 // the tutorial: on a first visit or asked for with ?tut=; coach: the running one
 let coach = null, learn = TUT !== null || !localStorage.getItem('tinywmcraft.tutorial');
 // sleep: frames in a row that look asleep / awake, steps skipped so far (-1: not skipping); diamond: frames in a row that
-// show one in the inventory, and whether this run has had its diamond moment
-let sleepy = 0, awake = 0, skipped = -1, diamonds = 0, diamond = false, bannerOff = 0;
+// show one in the inventory, whether this run has had its diamond moment, and the step it came on
+let sleepy = 0, awake = 0, skipped = -1, diamonds = 0, diamond = false, gemAt = 0, bannerOff = 0;
 
 const status = (s, hot) => { st.textContent = s; st.className = hot ? 'st hot' : 'st'; };
 const info = (s, hot) => TOUCH || status(s, hot);   // what each move did: on phones the space goes to the controls
 
 function fit() {  // the largest integer scale that fits. Every key is one size, one game pixel apart: beside the game the action
   // keys span the map and the three buttons, stacked, end with the movement keys under the frame (63 + 1 + 11.5 + 1 + 11.5 = 88);
-  // under the game everything sits on one grid of six columns
+  // under the game everything sits on one grid of six columns. Under the frame, before the keys: the seed and step line
+  // (meta), its font pixel half a game pixel; beside the game the three buttons grow by its height, so the side still
+  // ends with the movement keys
   const row = getComputedStyle(root).flexDirection === 'row', W = root.clientWidth, cols = row ? 3 : 6;
-  const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / H)));
-  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6;
+  const s = Math.max(1, Math.min(MAX_SCALE, Math.floor((W - (row ? 16 : 0)) / (row ? 99.5 : 63)), Math.floor((innerHeight - 80) / (H + 4))));
+  const b = row ? (MAP - 3) * s / 4 : 58 * s / 6, fp = Math.max(1, s >> 1), mh = s + 5 * fp;
   root.querySelector('.screen').style.width = canvas.style.width = 63 * s + 'px';
+  meta.width = Math.floor(63 * s / fp);
+  Object.assign(meta.style, { width: meta.width * fp + 'px', height: 5 * fp + 'px', marginTop: s + 'px' });
+  tagged();
   const grid = GRID[row ? 'row' : TOUCH ? 'right' : 'left'];
   Object.assign(keys.style, { gridTemplateColumns: row ? `repeat(4, ${b}px) ${59 * s - 4 * b}px` : `repeat(6, ${b}px)`,
     gridAutoRows: b + 'px', gap: s + 'px', marginTop: s + 'px' });
@@ -119,7 +145,7 @@ function fit() {  // the largest integer scale that fits. Every key is one size,
   Object.assign(acts.style, { gridTemplateColumns: `repeat(${cols}, ${b}px)`, gridAutoRows: b + 'px', gap: s + 'px',
     marginTop: row ? TOP * s + 'px' : '' });
   Object.assign(btns.style, { gridTemplateColumns: row ? 3 * b + 2 * s + 'px' : `repeat(3, ${2 * b + s}px)`,
-    gridAutoRows: (row ? 12 * s : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to ACTION's bottom
+    gridAutoRows: (row ? 12 * s + mh / 3 : b) + 'px', gap: s + 'px', marginTop: s + 'px' });   // 3 x 12 + 2 gaps = map to ACTION's bottom
   root.style.setProperty('--px', s + 'px');   // one game pixel: the keys' border, and the icons drawn at the game's tile size
   root.style.setProperty('--fp', Math.max(1, s >> 1) + 'px');   // one pixel of the font on the buttons
   root.style.setProperty('--np', Math.max(1, Math.floor(b / 20)) + 'px');   // NOOP: 15 font pixels in three quarters of a key
@@ -140,10 +166,9 @@ function learnt(early) {  // the tutorial is over: not again on this browser, th
   if (!end) greet();
 }
 
-function teach(k) {  // the tutorial over start k, from its first frame
-  const known = [...starts.acts.subarray(k * 31, k * 31 + 31)].reverse().find(a => a >= 1 && a <= 4);   // the way it faces
-  const rgb = starts.rgb.subarray(k * RGB, (k + 1) * RGB);
-  coach = tutorial({ root, canvas, touch: TOUCH, look: LOOK, top: TOP, face: known ?? facing(rgb), onEnd: learnt });
+function teach() {  // the tutorial over this world, from its first frame
+  const rgb = frames[0].rgb;
+  coach = tutorial({ root, canvas, touch: TOUCH, look: LOOK, top: TOP, face: facing(rgb), onEnd: learnt });
   coach.begin(rgb, inventory(rgb));
   status('');
 }
@@ -170,10 +195,20 @@ function head(c, f) {  // the score and the best score
   text(String(f.score), text('SCORE', 2, 1, CAP, c) + 2, 1, f.r > 0.5 ? ORANGE : FG, c);
   const right = `HI ${f.best}`;
   text(right, 62 - 4 * right.length, 1, CAP, c);
-  c.fillStyle = EDGE;   // how much of the run is left, a line along the bottom
+  c.fillStyle = EDGE;   // a line along the bottom
   c.fillRect(0, TOP - 1, 63, 1);
-  c.fillStyle = CAP;
-  c.fillRect(0, TOP - 1, Math.round(63 * f.moves / MOVES), 1);
+}
+
+function tag(c, f, x0, x1, y, u = 1) {  // the line under the frame: the seed on the left, the step on the right
+  if (f.seed !== null) text(`SEED ${seedCode(f.seed)}`, x0, y, CAP, c, u);
+  const m = `STEP ${f.moves}`;
+  text(m, x1 - u * (4 * m.length - 1), y, CAP, c, u);
+}
+
+function tagged(f = frames.at(-1) ?? { seed: null, moves }) {  // the line on the page
+  const c = meta.getContext('2d');
+  c.clearRect(0, 0, meta.width, meta.height);
+  tag(c, f, 0, meta.width, 0);
 }
 
 function keyboard(c, a, r) {  // the keys under the frame in clips, the pressed one in orange; a square filled by the reward
@@ -198,10 +233,10 @@ function keyboard(c, a, r) {  // the keys under the frame in clips, the pressed 
   c.fillRect(RX + 1, y0 + 8 - fill, 7, fill);
 }
 
-function over(c, f) {  // the end of a run: Minecraft's red death screen, or a dark one after the last move; the title, the score
-  const g = c.createLinearGradient(0, TOP, 0, TOP + 63), dead = f.end === 'dead', title = dead ? 'DEAD!' : 'THE END';
-  g.addColorStop(0, dead ? 'rgba(150, 20, 20, 0.42)' : 'rgba(10, 10, 10, 0.42)');
-  g.addColorStop(1, dead ? 'rgba(128, 40, 40, 0.6)' : 'rgba(10, 10, 10, 0.6)');
+function over(c, f) {  // the end of a run, Minecraft's red death screen: the title, the score
+  const g = c.createLinearGradient(0, TOP, 0, TOP + 63), title = 'DEAD!';
+  g.addColorStop(0, 'rgba(150, 20, 20, 0.42)');
+  g.addColorStop(1, 'rgba(128, 40, 40, 0.6)');
   c.fillStyle = g;
   c.fillRect(0, TOP, 63, 63);
   const shadowed = (s, x, y, color, u = 1) => (text(s, x + 1, y + 1, 'rgba(10, 0, 0, 0.6)', c, u), text(s, x, y, color, c, u));
@@ -220,44 +255,42 @@ function paint(c, f, board = false) {  // one move: the score, the frame with a 
   if (f.end) over(c, f);
 }
 
-function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip: the frame, key and reward, not the pixels drawn
-  const f = { rgb, a, r, score, best, moves, end, diamond };
+function draw(rgb, a, r = 0) {  // shows a move and keeps it for the clip (the last CLIP): the frame, key and reward, not
+  // the pixels drawn
+  const f = { rgb, a, r, score, best, moves, end, diamond, gem: gemAt, seed };
   paint(ctx, f);
   for (const el of root.querySelectorAll('.key[data-a]')) el.classList.toggle('on', +el.dataset.a === a);   // the key pressed
   tick++;
   frames.push(f);
+  if (frames.length > CLIP) frames.shift();
+  tagged(f);
 }
 
-function card(c, f) {  // the last screen of every clip: the score to beat, or the diamond
+function card(c, f) {  // the last screen of every clip: the score to beat, or the step the diamond came on
   c.fillStyle = BG;
   c.fillRect(0, 0, 63, H);
   const mid = (s, y, color, u = 1) => text(s, (63 - u * (4 * s.length - 1)) >> 1, y, color, c, u);
+  const steps = n => `${n} STEP${n === 1 ? '' : 'S'}`;
   mid('MY SCORE', 14, CAP);
   mid(String(f.score), 24, ORANGE, 4);
-  mid(`IN ${f.moves} MOVE${f.moves === 1 ? '' : 'S'}`, 50, CAP);
-  mid(f.diamond ? 'I GOT A' : 'CAN YOU', 66, FG);
-  mid(f.diamond ? 'DIAMOND!' : 'BEAT IT?', 73, f.diamond ? ORANGE : FG);
+  mid(`IN ${steps(f.moves)}`, 50, CAP);
+  mid(f.diamond ? 'DIAMOND IN' : 'CAN YOU', 66, FG);
+  mid(f.diamond ? steps(f.gem) : 'BEAT IT?', 73, f.diamond ? ORANGE : FG);
 }
 
-const gauss = n => {  // standard normal, Box-Muller
-  const x = new Float32Array(n);
-  for (let i = 0; i < n; i += 2) {
-    const r = Math.sqrt(-2 * Math.log(1 - Math.random())), t = 2 * Math.PI * Math.random();
-    x[i] = r * Math.cos(t);
-    x[i + 1] = r * Math.sin(t);
-  }
-  return x;
-};
+const randomSeed = () => crypto.getRandomValues(new Uint32Array(1))[0] % SEEDS;
 
-function reset(k = starts.day[Math.floor(Math.random() * starts.day.length)]) {  // a real start, random unless given: 31
-  // clean latents with their incoming actions, and the last real frame
+function reset(s = randomSeed()) {  // a new world, seed s (random unless given): an empty window, dark until the model
+  // imagines its first frame (dream)
   episode++;
-  z = starts.lat.slice(k * L, (k + 1) * L);
-  tau = new Float32Array(31).fill(1);
+  seed = s;
+  calls = 0;
+  z = new Float32Array(L);
+  tau = new Float32Array(31);
   act = new Int32Array(32);
-  act.set(starts.acts.subarray(k * 31, k * 31 + 31));
+  fill = 0;
   frames = [];
-  score = moves = 0;
+  score = moves = gemAt = 0;
   end = '';
   msg.textContent = '';
   wake();
@@ -265,9 +298,44 @@ function reset(k = starts.day[Math.floor(Math.random() * starts.day.length)]) { 
   diamond = false;
   gemOff();
   banner.hidden = true;
-  draw(starts.rgb.subarray(k * RGB, (k + 1) * RGB));
-  if (session && !coach) greet();
-  return k;
+  paint(ctx, { rgb: new Uint8Array(RGB), score, best, moves, end, diamond });
+  tagged({ seed: null, moves });
+  if (session) begin().catch(fail);
+}
+
+async function begin() {  // a new world plays: its first frame imagined, then the tutorial or the hint
+  if (!(await dream())) return;
+  if (learn && episode === 1) teach();
+  else if (!coach) greet();
+}
+
+// The first frame, imagined from noise at slot 0 after a noop, not a step. About 2% of imagined first frames look
+// mid-game (less food or drink, an item held): until one is fresh (hud.js, 9/9/9/9 and nothing held) it is imagined
+// again with the next seed, so the seed shown always gives this world straight away. Returns whether the world is
+// still the same one.
+async function dream() {
+  busy = true;
+  const ep = episode;
+  act[31] = 0;
+  try {
+    for (let n = 1; ; n++) {
+      const o = await run(session, feeds());
+      if (ep !== episode) return false;
+      if (n < REROLL && !fresh(o.rgb)) {
+        seed = (seed + 1) % SEEDS;
+        continue;
+      }
+      calls++;
+      z.set(o.z, 0);
+      tau[0] = 0.9;
+      act[0] = 0;
+      fill = 1;
+      draw(o.rgb);
+      return true;
+    }
+  } finally {
+    if (ep === episode) busy = false;   // a new world's first frame may be on its way already
+  }
 }
 
 let tips = 0;   // moves the short hint stays before the status line shows what each move did
@@ -282,6 +350,7 @@ function spot(inv) {  // the diamond moment: a diamond in the inventory on two f
   diamonds = d.n >= 1 && d.margin > DIAMOND_SURE ? diamonds + 1 : 0;
   if (diamonds >= 2 && !diamond) {
     diamond = frames.at(-1).diamond = true;   // the clip ends on it
+    gemAt = frames.at(-1).gem = moves;
     banner.className = 'banner gem';   // words only, so taps on the map go through; the save button pulses
     banner.innerHTML = `<b>${pix('DIAMOND!', ORANGE, 'px', '--px')}</b><span>Save the clip</span>`;
     banner.hidden = false;
@@ -329,9 +398,16 @@ function wake() {  // skipping stops; stopped while still asleep ("wake me", the
   if (banner.classList.contains('zzz')) banner.hidden = true;
 }
 
-function feeds() {  // the past fed corrupted to its signal levels tau, fresh noise every call
-  const eps = gauss(L);
-  return { past: z.map((v, i) => tau[i >> 9] * v + (1 - tau[i >> 9]) * eps[i]), tau, act, noise: gauss(512), rnoise: gauss(512) };
+function feeds() {  // the past fed corrupted to its signal levels tau, this world's noise for this call; the new frame
+  // goes to slot fill (31 once the window is full): its position, the slot before it for the done head, and the past
+  // slots it sees
+  const g = (n, buf) => noise(seed, calls, buf, n);
+  const eps = g(L, PAST), s = Math.min(fill, 31), pos = new Float32Array(32), prev = new Float32Array(31);
+  const kmask = new Float32Array(32).fill(-1e30, s, 31);
+  pos[s] = 1;
+  if (s) prev[s - 1] = 1;
+  return { past: z.map((v, i) => tau[i >> 9] * v + (1 - tau[i >> 9]) * eps[i]), tau, act, noise: g(512, NOISE_BUF), rnoise: g(512, RNOISE),
+    pos, prev, kmask };
 }
 
 async function run(s, x) {  // one call of the world model: x's arrays in, the outputs out
@@ -346,12 +422,20 @@ async function step(a) {  // results of a step started before a reset are droppe
   try {
     const t0 = performance.now(), o = await run(session, feeds());
     if (ep !== episode) return;
-    z.copyWithin(0, 512);
-    z.set(o.z, 30 * 512);
-    tau.copyWithin(0, 1);
-    tau[30] = 0.9;
-    act.copyWithin(0, 1);
-    end = o.done > DONE_THRESHOLD ? 'dead' : ++moves >= MOVES ? 'time' : '';
+    calls++;
+    if (fill < 31) {   // the window fills: the new frame stays in its slot
+      z.set(o.z, fill * 512);
+      tau[fill] = 0.9;
+      act[fill++] = a;
+    } else {   // full: it slides
+      z.copyWithin(0, 512);
+      z.set(o.z, 30 * 512);
+      tau.copyWithin(0, 1);
+      tau[30] = 0.9;
+      act.copyWithin(0, 1);
+    }
+    moves++;
+    end = o.done > DONE_THRESHOLD ? 'dead' : '';
     const r = o.reward;
     score += r > 0.5;
     if (score > best) localStorage.setItem('tinywmcraft.best', best = score);
@@ -368,30 +452,37 @@ async function step(a) {  // results of a step started before a reset are droppe
       '<button data-a="reset">new world</button></div>';
     clip().catch(() => {});   // encoded now, so share opens at once
   } finally {
-    busy = false;
+    if (ep === episode) busy = false;   // a new world's first frame may be on its way already
   }
 }
 
-async function encode() {  // the run as an MP4 under the link: 8x nearest-neighbour, at most a minute, then the score card
+async function encode() {  // the run as an MP4: the link on top, the frames 8x nearest-neighbour, the seed and step line
+  // under them; at most a minute of frames, then the score card
   const fs = frames.slice(), d = new Date(), p2 = n => String(n).padStart(2, '0');   // play goes on while it encodes
   const name = `tinywmcraft-${fs.at(-1).diamond ? 'diamond' : 'score'}-${score}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
     `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.mp4`;
   const { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } = await (mux ??= import(MEDIABUNNY));
   const G = 8, LINE = 5, U = 3, out = document.createElement('canvas'), one = document.createElement('canvas');
-  [out.width, out.height, one.width, one.height] = [63 * G, (LINE + H) * G, 63, H];
+  [out.width, out.height, one.width, one.height] = [63 * G, (LINE + H + LINE) * G, 63, H];
   const c = out.getContext('2d'), y = (LINE * G - 5 * U) >> 1, x = (out.width - U * (4 * LINK.join('').length - 1)) >> 1;
+  const foot = (LINE + H) * G, under = f => {   // the seed and the step, as on the page
+    c.fillStyle = BG;
+    c.fillRect(0, foot, out.width, LINE * G);
+    tag(c, f, 2 * G, out.width - 2 * G, foot + y, U);
+  };
   c.imageSmoothingEnabled = false;
   c.fillStyle = BG;
   c.fillRect(0, 0, out.width, LINE * G);
   text(LINK[1], text(LINK[0], x, y, CAP, c, U), y, ORANGE, c, U);
   const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
   const source = new CanvasSource(out, { codec: 'avc', bitrate: QUALITY_HIGH });
-  const fps = Math.max(6, Math.round(fs.length / 58)), oc = one.getContext('2d');   // 6 fps, faster up to a minute for 1000 moves
+  const fps = Math.max(FPS, Math.ceil(fs.length / CLIP_S)), oc = one.getContext('2d');
   output.addVideoTrack(source, { frameRate: fps });
   await output.start();
   for (const [i, f] of fs.entries()) {
     paint(oc, f, true);
     c.drawImage(one, 0, LINE * G, out.width, H * G);
+    under(f);
     await source.add(i / fps, i === fs.length - 1 ? 1.5 : 1 / fps);
     if (saving && i % 50 === 0) status(`making the clip: ${Math.round(100 * i / fs.length)}%`);
   }
@@ -405,7 +496,8 @@ async function encode() {  // the run as an MP4 under the link: 8x nearest-neigh
 const clip = () => (made?.[0] === tick ? made : (made = [tick, encode()]))[1];   // encoded once per frame shown
 
 async function ready() {  // the clip, its progress shown while it encodes; none if the click asking for it has expired by then
-  // (a full run takes ~5 s, as long as a click lets a page download or share; a late download Chrome blocks without a word)
+  // (3000 steps take ~18 s on an M1 Pro; a click lets a page download or share for ~5 s; a late download Chrome blocks
+  // without a word)
   status('making the clip');
   saving = true;
   try {
@@ -520,13 +612,7 @@ async function load(url, what, keep) {  // fetch with a progress bar; keep: from
 }
 
 async function main() {
-  const b = await load(STARTS, 'start frames'), n = new DataView(b.buffer).getUint32(0, true);
-  starts = { n, lat: new Float32Array(b.buffer, 4, n * L), acts: b.subarray(4 + 4 * n * L, 4 + 4 * n * L + 31 * n) };
-  starts.rgb = b.subarray(4 + 4 * n * L + 31 * n);
-  // random worlds start early in the day, dusk 80+ steps away (starts_day.json, indices into the default starts.bin)
-  const day = STARTS === 'starts.bin' ? await fetch('starts_day.json').then(r => r.json()).catch(() => []) : [];
-  starts.day = day.filter(k => k < n).length ? day.filter(k => k < n) : [...Array(n).keys()];
-  const first = reset(learn && TUT_START >= 0 && TUT_START < n ? TUT_START : undefined);
+  reset(SEED ?? (learn ? TUT_SEED : undefined));   // the first world: the one asked for, the tutorial's, or a random one
   stage = 'loading the model';
   const model = await load(MODEL, 'world model', !LOCAL && /^https:\/\//.test(MODEL));   // pinned URLs are cached
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
@@ -536,14 +622,14 @@ async function main() {
   const device = await adapter.requestDevice();
   device.lost.then(i => i.reason === 'destroyed' || fail(new Error(`the GPU was lost: ${i.message || i.reason}`)));
   const s = await create(device, model);   // every buffer, pipeline and bind group, once
+  if (!s.meta.inputs.pos) throw new Error(`${MODEL} has no slot inputs: the player needs the slot graph (export_web.py)`);
   stage = 'first run';
   await run(s, feeds());   // warm-up: the first run waits for the GPU to finish compiling
   stage = 'move';
   session = s;
   msg.textContent = '';
   hint();
-  if (learn && episode === 1) teach(first);
-  else greet();
+  await begin();
   mux = import(MEDIABUNNY);   // the MP4 encoder, loaded in the background so saving a clip is quick
 }
 
@@ -569,5 +655,6 @@ fit();
 hint();
 if (navigator.gpu) main().catch(fail);
 else msg.innerHTML = '<b>needs WebGPU</b><span>Chrome, Edge, or Safari 26+</span>';
-if (LOCAL) window.tinywm = { press, inventory, get frame() { return frames.at(-1); }, get coach() { return coach; },
-  get busy() { return busy; }, get skipped() { return skipped; } };   // for testing on this machine
+if (LOCAL) window.tinywm = { press, inventory, fresh, clip, get frame() { return frames.at(-1); }, get frames() { return frames; },
+  get seed() { return seedCode(seed); }, get coach() { return coach; }, get busy() { return busy; },
+  get skipped() { return skipped; } };   // for testing on this machine
