@@ -5,6 +5,8 @@ own textures (craftax==1.5.0, TEXTURES[7]), as base64 bytes.
   PLAYER   the player sprite facing left, right, up, down: RGBA, alpha 0 or 255
   WOOD     the inventory slot of wood (x 5, y 0 of the strip under the map) with counts 0..9, as ds_ach.py renders it
   DIAMOND  the slot of diamonds (x 0, y 1), counts 0..9
+  SLOTS    all 16 slots of the strip (status, items, tools; SLOT_NAMES, SLOT_XY), counts 0..9 each, for the player's
+           check of an imagined first frame (9/9/9/9 and nothing held)
 
     python docs/make_hud.py
 """
@@ -21,6 +23,13 @@ BLOCKS = {"grass": "GRASS", "sand": "SAND", "water": "WATER", "stone": "STONE", 
           "table": "CRAFTING_TABLE", "plant": "PLANT", "ripe": "RIPE_PLANT", "coal": "COAL", "iron": "IRON",
           "diamond": "DIAMOND", "furnace": "FURNACE", "lava": "LAVA"}
 MOBS = {"cow": "GRASS", "zombie": "GRASS", "skeleton": "PATH"}
+# the strip under the map as craftax_classic/renderer.py draws it: name, column, row, icon
+SLOTS = [("health", 0, 0, "health_texture"), ("food", 1, 0, "hunger_texture"), ("drink", 2, 0, "thirst_texture"),
+         ("energy", 3, 0, "energy_texture"), ("sapling", 4, 0, "sapling_texture"), ("wood", 5, 0, "WOOD"),
+         ("stone", 6, 0, "STONE"), ("coal", 7, 0, "COAL"), ("iron", 8, 0, "IRON"), ("diamond", 0, 1, "DIAMOND"),
+         ("wood_pickaxe", 1, 1, "wood_pickaxe_texture"), ("stone_pickaxe", 2, 1, "stone_pickaxe_texture"),
+         ("iron_pickaxe", 3, 1, "iron_pickaxe_texture"), ("wood_sword", 4, 1, "wood_sword_texture"),
+         ("stone_sword", 5, 1, "stone_sword_texture"), ("iron_sword", 6, 1, "iron_sword_texture")]
 
 
 def block(name):
@@ -51,8 +60,11 @@ def main():
     small = T["smaller_block_textures"]
     wood = np.stack([slot(small[BlockType.WOOD.value], n) for n in range(10)])
     diamond = np.stack([slot(small[BlockType.DIAMOND.value], n) for n in range(10)])
+    icon = lambda k: small[BlockType[k].value] if k.isupper() else T[k]
+    slots = np.stack([[slot(icon(k), n) for n in range(10)] for _, _, _, k in SLOTS])
     out = {"names": list(BLOCKS) + list(MOBS), "tiles": b64(np.stack(tiles)), "player": b64(player),
-           "wood": b64(wood), "diamond": b64(diamond)}
+           "wood": b64(wood), "diamond": b64(diamond), "slot_names": [n for n, *_ in SLOTS],
+           "slot_xy": [[x, y] for _, x, y, _ in SLOTS], "slots": b64(slots)}
     path = Path(__file__).resolve().parent / "hud_tpl.js"
     path.write_text("// made by make_hud.py from Craftax-Classic's textures (github.com/MichaelTMatthews/Craftax, MIT, (c) 2024 "
                     "Michael Matthews)\nexport const TPL = " + json.dumps(out, indent=0) + ";\n")

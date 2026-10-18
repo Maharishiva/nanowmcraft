@@ -1,6 +1,7 @@
 // Reads a 63x63 frame the way the tutorial needs: inventory counts from the strip under the map, and what is on the map
-// tiles around the player. Nearest template of Craftax-Classic's own textures (hud_tpl.js, made by make_hud.py); the frames
-// are generated and a little blurry, so every read comes with a margin to the second best template.
+// tiles around the player; and whether an imagined first frame is a fresh start (fresh). Nearest template of
+// Craftax-Classic's own textures (hud_tpl.js, made by make_hud.py); the frames are generated and a little blurry, so
+// every read comes with a margin to the second best template.
 import { TPL } from './hud_tpl.js';
 
 const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -39,6 +40,18 @@ function nearest(p, tpl, n, scale = false) {  // index of the nearest of n templ
 export function inventory(rgb) {  // { wood, diamond }: each { n: the count, d, margin }
   const slot = (x, y, tpl) => { const r = nearest(tile(rgb, 7 * x, 49 + 7 * y), tpl, 10); return { n: r.k, d: r.d, margin: r.margin }; };
   return { wood: slot(5, 0, WOOD), diamond: slot(0, 1, DIAMOND) };
+}
+
+const SLOTS = bytes(TPL.slots);
+export const SLOT_NAMES = TPL.slot_names;          // health, food, drink, energy, sapling, wood, ..., iron_sword
+
+export function slots(rgb) {  // the counts of all 16 slots of the strip, in SLOT_NAMES' order (nearest template, as
+  // inventory() reads wood and diamonds)
+  return TPL.slot_xy.map(([x, y], i) => nearest(tile(rgb, 7 * x, 49 + 7 * y), SLOTS.subarray(i * 1470, (i + 1) * 1470), 10).k);
+}
+
+export function fresh(rgb) {  // a frame a world can start from: the status bar full (9/9/9/9) and nothing held
+  return slots(rgb).every((n, i) => n === (i < 4 ? 9 : 0));
 }
 
 export function tiles(rgb) {  // the 63 map tiles, row by row, as names
