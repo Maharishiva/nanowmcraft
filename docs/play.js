@@ -201,15 +201,12 @@ function tag(c, f, x0, x1, y, u = 1) {  // the line under the keys in clips: the
   text(m, x1 - u * (4 * m.length - 1), y, CAP, c, u);
 }
 
-function tagged(f = frames.at(-1) ?? { seed: null, moves, score, best }) {  // the seed and step on the page: two lines,
-  // the seed on top, centred in the score strip between SCORE and HI, a font pixel of at most half a game pixel; without
-  // the words SEED and STEP when the gap is too narrow for them at two screen pixels a font pixel
+function tagged(f = frames.at(-1) ?? { seed: null, moves, score, best }) {  // the step and seed on the page: two lines,
+  // the step number on top, the seed code under it, centred in the score strip between SCORE and HI, a font pixel of at
+  // most half a game pixel
   const a = 24 + 4 * String(f.score).length, b = 62 - 4 * `HI ${f.best}`.length;   // the gap, in game pixels
-  const room = Math.max(0, b - a - 2) * px, code = f.seed === null ? '' : seedCode(f.seed), top = Math.max(1, px >> 1);
-  const width = ls => Math.max(...ls.map(l => 4 * l.length - 1));
-  let lines = [code && `SEED ${code}`, `STEP ${f.moves}`];
-  if (room / width(lines) < Math.min(2, top)) lines = [code, String(f.moves)];
-  const w = width(lines), fp = Math.max(1, Math.min(top, Math.floor(room / w)));
+  const room = Math.max(0, b - a - 2) * px, lines = [String(f.moves), f.seed === null ? '' : seedCode(f.seed)];
+  const w = Math.max(...lines.map(l => 4 * l.length - 1)), fp = Math.max(1, Math.min(px >> 1, Math.floor(room / w)));
   [meta.width, meta.height] = [w, 11];
   const c = meta.getContext('2d');
   lines.forEach((l, i) => text(l, (w - 4 * l.length + 1) >> 1, 6 * i, CAP, c));
