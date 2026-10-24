@@ -13,11 +13,13 @@ Behave: on top of the drawn driver policy (w_policy per episode; another one tak
             once per U[force_gap] steps.
 Trips: in native play, at hazard 1 / gap when safe (or when the caller asks, `now`, with p_now: an out-and-back of
 scale >= now_scale), a trip draws a scale [lo, hi] of planner distances and a tour of waypoints: A the start, R a
-remembered point (age max(min_age, lo) to age_span * hi, by salience), F a point at that distance, G one at half of
-it; e.g. "R" back to an old place, "FA" out and back, "FGAG" A-B-C-A-C. The planner, or a learned walker for p_lead
-of the trips, walks the legs (p_agent: the policy's own action); a waypoint may get a pause (p_pause, U[pause], hot
-with p_hot), the end U[dwell] native steps. Danger yields to the policy. A trip is aborted at an episode end, danger
-over yield_max, no path (a walker replans), no progress for `stuck` steps, or a leg over slack x distance + extra.
+remembered point (age max(min_age, lo) to age_span * hi, by salience), F a point at that distance (with `hide`, out
+of A's view), G one at half of it; e.g. "FA" out and back, "FAFA" twice (A-B-A-B-A), "GFA" A-B-C-A, "R" back to an
+old place.
+The planner, or a learned walker for w_lead of the trips, walks the legs (p_agent: the policy's own action); a
+waypoint may get a pause (p_pause, U[pause, max(short, hi / 2)], hot with p_hot), the end U[dwell] native steps.
+Danger yields to the policy. A trip is aborted at an episode end, danger over yield_max, no path (a walker replans),
+no progress for `stuck` steps, or a leg over slack x distance + extra.
 """
 from dataclasses import dataclass
 from typing import Callable
@@ -146,14 +148,17 @@ class Trips:
     plan: Callable                        # (s, target) -> plan (a pytree), made at each leg start and on a replan
     step: Callable                        # (s, plan, key) -> (action, distance left, a path exists)
     dist: Callable                        # (plan, points (M, P)) -> (M,) planner distance from the plan's target
-    sample: Callable                      # (plan, lo, hi, key) -> (a point at a distance in [lo, hi], found)
-    P: int = 2; M: int = 256; gap: float = 30.0
-    scales: tuple = ((2, 3), (4, 7), (8, 15), (16, 31), (32, 63), (64, 127)); w_scale: tuple = (1, 2, 2, 0.6, 0.3, 0.15)
-    tours: tuple = ("R", "FA", "GR", "FGAG", "RFA"); w_tour: tuple = (0.35, 0.3, 0.1, 0.15, 0.1)
-    min_age: int = 4; age_span: float = 4.0; p_pause: float = 0.4; pause: tuple = (2, 24); p_hot: float = 0.5
-    tau_act: tuple = (3.0, 8.0); dwell: tuple = (2, 12); short: int = 8; p_agent: float = 0.1; slack: float = 2.0
-    extra: int = 12; stuck: int = 8; yield_max: int = 24; p_now: float = 0.3; now_scale: int = 2
-    p_lead: float = 0.5; lead_slack: float = 3.0; lead_extra: int = 20; lead_stuck: int = 16
+    sample: Callable                      # (plan, lo, hi, hide, key) -> (a point at a distance in [lo, hi], found)
+    P: int = 2; M: int = 256; gap: float = 3.0
+    scales: tuple = ((2, 3), (4, 8), (9, 16), (17, 40), (41, 63)); w_scale: tuple = (0.38, 0.38, 0.17, 0.05, 0.02)
+    hide: tuple = (False, True, True, True, True); w_lead: tuple = (0.0, 0.1, 0.3, 0.5, 0.5)    # per scale
+    tours: tuple = ("FA", "FAFA", "FAFAFA", "GFA", "R", "RFA")                            # weights per scale:
+    w_tour: tuple = ((0.2, 0.4, 0.3, 0, 0.1, 0), (0.3, 0.35, 0.15, 0.1, 0.05, 0.05), (0.35, 0.3, 0.05, 0.2, 0.05, 0.05),
+                     (0.5, 0.05, 0, 0.25, 0.1, 0.1), (0.5, 0, 0, 0.3, 0.1, 0.1))
+    min_age: int = 4; age_span: float = 4.0; p_pause: float = 0.4; pause: int = 1; p_hot: float = 0.5
+    tau_act: tuple = (3.0, 8.0); dwell: tuple = (1, 6); short: int = 6; p_agent: float = 0.1; slack: float = 2.0
+    extra: int = 12; stuck: int = 8; yield_max: int = 10; p_now: float = 0.3; now_scale: int = 1
+    lead_slack: float = 3.0; lead_extra: int = 20; lead_stuck: int = 16
 
     def init(self, s):
         pt = jax.vmap(self.point)(s)
@@ -215,14 +220,15 @@ class Trips:
         next_leg = (at & ~last & ~pause) | ((mode == PAUSE) & (left <= 0))
         new_mode = jnp.where(end == REACHED, DWELL, jnp.where(pause, PAUSE, mode))
         new_mode = jnp.where(((mode == DWELL) & ((left <= 0) | done)) | ((end > 0) & (end != REACHED)), 0, new_mode)
-        new_left = jnp.where(end == REACHED, _ri(k[2], n, self.dwell), jnp.where(pause, jnp.minimum(
-            _ri(k[3], n, self.pause), jnp.maximum(st["cap"], self.pause[0])), left))
+        new_left = jnp.where(end == REACHED, _ri(k[2], n, self.dwell), jnp.where(pause, jax.random.randint(
+            k[3], (n,), self.pause, jnp.maximum(st["cap"], self.pause) + 1), left))
         wi = st["wi"] + next_leg
         now = now & bern(13, self.p_now)                          # a new trip: scale, tour, waypoints
         go = (mode == 0) & ~done & start_ok & (allow & bern(4, 1 / self.gap) | now)
         sc = jax.random.categorical(k[5], jnp.log(jnp.asarray(self.w_scale)), shape=(n,))
         sc = jnp.where(now, jnp.maximum(sc, self.now_scale), sc)
         lo, hi = (jnp.asarray([x[j] for x in self.scales])[sc] for j in (0, 1))
+        hide = jnp.asarray(self.hide)[sc]
 
         def pick(_):
             ph = jax.vmap(self.plan)(s, pt)
@@ -231,16 +237,15 @@ class Trips:
             fits &= (age >= jnp.maximum(self.min_age, lo)[:, None]) & (age <= self.age_span * hi[:, None])
             w = jnp.where(fits, jnp.log(jnp.maximum(st["mem_sal"], 1e-6)), -jnp.inf)
             ir = jnp.argmax(w + jax.random.gumbel(k[6], w.shape), -1)
-            f, has_f = jax.vmap(self.sample)(ph, lo, hi, jax.random.split(k[7], n))
-            g, has_g = jax.vmap(self.sample)(ph, jnp.maximum(lo // 2, 1), jnp.maximum(hi // 2, 1),
+            f, has_f = jax.vmap(self.sample)(ph, lo, hi, hide, jax.random.split(k[7], n))
+            g, has_g = jax.vmap(self.sample)(ph, jnp.maximum(lo // 2, 1), jnp.maximum(hi // 2, 1), hide & False,
                                              jax.random.split(k[8], n))
             found = jnp.stack([jnp.ones((n,), bool), fits.any(-1), has_f, has_g], 1)
             return jnp.stack([pt, st["mem_pt"][jnp.arange(n), ir], f, g], 1), found
         cand, has = jax.lax.cond(go.any(), pick, lambda _: (jnp.stack([pt] * 4, 1), jnp.zeros((n, 4), bool)), None)
         W, tours = st["wp"].shape[1], self.tours
         codes = jnp.asarray([["ARFG".index(c) for c in t] + [0] * (W - len(t)) for t in tours])
-        tour = jnp.where(now, tours.index("FA"), jax.random.categorical(k[9], jnp.log(jnp.asarray(self.w_tour)),
-                                                                          shape=(n,)))
+        tour = jnp.where(now, tours.index("FA"), jax.random.categorical(k[9], jnp.log(jnp.asarray(self.w_tour))[sc]))
         fine = (has | ~jnp.asarray([[c in t for c in "ARFG"] for t in tours])[tour]).all(-1)
         go = go & (fine | has[:, 2])
         tour = jnp.where(fine, tour, tours.index("FA"))
@@ -248,8 +253,8 @@ class Trips:
         nwp = jnp.asarray([len(t) for t in tours])[tour]
         g = lambda new, old: jnp.where(go.reshape(go.shape + (1,) * (jnp.ndim(old) - 1)), new, old)
         st = dict(st, tour=g(tour, st["tour"]), scale=g(sc, st["scale"]), wp=g(wp, st["wp"]), nwp=g(nwp, st["nwp"]),
-                  lead=g(bern(14, self.p_lead), st["lead"]), trip=st["trip"] + go,
-                  hot=g(bern(10, self.p_hot), st["hot"]),
+                  lead=g(jax.random.uniform(k[14], (n,)) < jnp.asarray(self.w_lead)[sc], st["lead"]),
+                  trip=st["trip"] + go, hot=g(bern(10, self.p_hot), st["hot"]),
                   cap=g(jnp.maximum(self.short, hi // 2), st["cap"]), tau=g(_u(k[11], n, self.tau_act), st["tau"]))
         wi = jnp.where(go, 0, wi)
         new_mode = jnp.where(go | (next_leg & (new_mode != 0)), WALK, new_mode)
@@ -269,17 +274,18 @@ class Trips:
                     calm=keep_ok | (new_mode == 0) | (new_mode == DWELL))
 
 
-def pieces(bnd, death, busy, quiet, idle_max=64, pad=16, seg=(250, 1000), min_len=48, seed=0):
+def pieces(bnd, death, busy, quiet, skip, idle_max=64, pad=16, seg=(128, 512), min_len=128, seed=0):
     """Cut every stream (bnd (T, E): an episode ends here; death: by dying) into pieces: stretches with no busy
-    transition for over idle_max steps are dropped but for pad steps at each end; the rest is split into pieces of about
-    U[seg] transitions that end on a boundary or a quiet transition. -> [(stream, first, last, ends in a death)]."""
+    transition for over idle_max steps are dropped but for pad steps at each end, and so are the `skip` transitions;
+    the rest is split into pieces of about U[seg] transitions that end on a boundary or a quiet transition (a piece
+    runs on past seg until it reaches one). -> [(stream, first, last, ends in a death)]."""
     T, E = bnd.shape
     rng, out, ts = np.random.default_rng(seed), [], np.arange(T)
     for e in range(E):
         b, q, y = bnd[:, e], quiet[:, e] & ~bnd[:, e], busy[:, e] | bnd[:, e]
         prev = np.maximum.accumulate(np.where(y, ts, -T))
         nxt = np.minimum.accumulate(np.where(y, ts, 2 * T)[::-1])[::-1]
-        keep = y | (nxt - prev - 1 <= idle_max) | (np.minimum(ts - prev, nxt - ts) <= pad)
+        keep = (y | (nxt - prev - 1 <= idle_max) | (np.minimum(ts - prev, nxt - ts) <= pad)) & ~skip[:, e]
         s = 0
         for zz in np.flatnonzero(keep & (~np.r_[keep[1:], False] | b)):        # where a kept stretch ends
             while s < zz and not keep[s]:
@@ -296,31 +302,37 @@ def pieces(bnd, death, busy, quiet, idle_max=64, pad=16, seg=(250, 1000), min_le
     return out
 
 
-def choose(segs, counts, total, target, weight, first, n0=300, seed=1):
-    """Greedy picks that balance events, not frames: the `first` pieces, then each time the piece with the best gain per
-    (n0 + its length) (n0 favours long pieces); got_k events of type k are worth weight_k * min(got_k / target_k, 1)
-    plus a small log tail past the target. counts (S, K): events per piece."""
+def choose(segs, counts, total, target, weight, n0=300, tail=0.02, seed=1):
+    """Greedy picks that balance events, not frames: each time the piece with the best gain per (n0 + its length)
+    (n0 favours long pieces); got_k events of type k are worth weight_k * min(got_k / target_k, 1)
+    plus a small log tail past the target (tail: kept small, or the many common types outweigh the rest).
+    Gains only shrink as events are got, so a stale gain bounds the true one (lazy greedy: same picks, fast).
+    counts (S, K): events per piece."""
     n, tg, w = np.asarray([s[2] - s[1] + 1 for s in segs], float), np.maximum(target, 1.0), np.asarray(weight, float)
-    value = lambda x: np.minimum(x / tg, 1.0) + 0.1 * np.log1p(np.maximum(x - tg, 0.0) / tg)
-    used = np.asarray(first, bool).copy()
-    picked, got, size = list(np.flatnonzero(used)), counts[used].sum(0).astype(float), n[used].sum()
+    value = lambda x: np.minimum(x / tg, 1.0) + tail * np.log1p(np.maximum(x - tg, 0.0) / tg)
     jitter = np.random.default_rng(seed).uniform(1.0, 1.01, len(segs))
+    gain_of = lambda i, got: (w * (value(got + counts[i]) - value(got))).sum(-1) / (n0 + n[i]) * jitter[i]
+    picked, got, size = [], np.zeros(counts.shape[1]), 0.0
+    gain, fresh = gain_of(np.arange(len(segs)), got), np.ones(len(segs), bool)
     while size < total:
-        gain = (w * (value(got + counts) - value(got))).sum(1) / (n0 + n) * jitter
-        gain[used | (size + n > total)] = -1.0
+        gain[size + n > total] = -1.0
         i = int(np.argmax(gain))
         if gain[i] < 0:
             break
-        used[i], size, got = True, size + n[i], got + counts[i]
+        if not fresh[i]:                                  # recompute the leader only; take it if it stays ahead
+            gain[i], fresh[i] = gain_of(i, got), True
+            continue
         picked.append(i)
+        gain[i], size, got, fresh[:] = -1.0, size + n[i], got + counts[i], False
     return picked, got
 
 
 def pack(segs, picked, spare, t_out, e_out):
     """First-fit decreasing of the picked pieces into e_out streams of t_out + 1 frames, the free tails filled with the
-    starts of spare pieces. -> src (t_out + 1, e_out, 2): (pool stream, frame) of every frame; done, truncated."""
+    starts of spare pieces (at least one frame, so a picked piece keeps its last transition and its death).
+    -> src (t_out + 1, e_out, 2): (pool stream, frame) of every frame; done, truncated."""
     n = lambda i: segs[i][2] - segs[i][1] + 1
-    bins, free = [[] for _ in range(e_out)], [t_out + 1] * e_out
+    bins, free = [[] for _ in range(e_out)], [t_out] * e_out
     for i in sorted(picked, key=lambda i: -n(i)):
         j = next((j for j in range(e_out) if free[j] >= n(i)), None)
         if j is not None:

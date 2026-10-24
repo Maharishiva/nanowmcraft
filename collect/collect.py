@@ -4,7 +4,7 @@ frames, are balanced (500k transitions in 250 streams of 2000).
 
 The Craftax part is this file:
   policies  a learned goal walker (the pixel PPO policy fine-tuned on diamonds plus a goal head; with no goal it plays
-            as that policy) drives most episodes and walks half of the trips; the pixel policy before the fine-tune, a
+            as that policy) drives most episodes and walks part of the trips; the pixel policy before the fine-tune, a
             pixel policy distilled from the symbolic one and the symbolic policy drive the rest and take over for short
             windows (all four run on every world each step, so a switch keeps a full memory).
   breakers  make_X_pickaxe <-> make_X_sword swapped until both tools of a tier are held (a coin per tier and episode),
@@ -14,10 +14,13 @@ The Craftax part is this file:
   forced    attempts that fail or work by the rules: mining with a too weak tool, crafts at a table, iron crafts with no
             furnace or at an old one, the tier's second tool, second tables and furnaces, failing furnace presses, more
             plants and saplings, sleeping by day, walks into lava.
-  trips     the player position; a breadth-first distance field over grass, sand and path (no mob, not next to lava).
-            Trips start in daylight when the player is awake, healthy and alone, and yield to danger and low needs.
+  trips     the player position; a breadth-first distance field over grass, sand and path (no mob, not next to lava);
+            a far point hides the start when it is 4+ rows or 5+ columns away. Trips start in daylight or dusk when
+            the player is awake, healthy and alone, and yield to danger and low needs.
   packing   busy: an event, a craft / place / sleep press, the do action on anything but ground, a trip step, a forced
-            action; quiet (a cut is allowed): no reward, no change in the inventory or the vitals, no trip.
+            action; quiet (a cut is allowed): no reward, no change in the inventory or the vitals, no trip. The cells
+            coming into view (by frames since last on screen) and full-view returns are events too; complete rollouts
+            (to the first diamond, to a ripe plant eaten, to a death) are never cut, long sleeps lose their middle.
 
     python collect/collect.py pool --out data/pool0 --seed 10
     python collect/collect.py pool --out data/eval --seed SEED --worlds 256 --steps 2000 --states
@@ -45,16 +48,32 @@ ACH = tuple(a.name.lower() for a in Achievement)
 CAUSES = ("none", "lava", "zombie", "skeleton", "starvation", "thirst", "exhaustion", "other", "time limit")
 POLICIES = (("goal walker on the pixel PPO diamond fine-tune", "walker.pkl", 0.6), ("pixel PPO", "h2_p1.pkl", 0.15),
             ("pixel, distilled from symbolic", "opd_1.pkl", 0.1), ("symbolic PPO", "sym_survive.pkl", 0.15))
-PRIORITY = dict(iron_pickaxe_first=3, iron_sword_after_pickaxe=3, stone_sword_after_pickaxe=3, iron_at_old_furnace=3,
-                iron_press_spell=3, furnace_then_no_iron_press=3, iron_press_no_furnace=3, second_furnace=3,
-                place_plant=3, more_sapling=3, unlock_eat_plant=3, return_scale2=3, death_lava_walk=6,
-                **{f"death_{k}": 6 for k in CAUSES[1:7]})                                  # piece-choice weights
-DEATHS = dict(death_lava=60, death_lava_walk=60, death_zombie=250, death_skeleton=110, death_thirst=150,
-              death_starvation=120, death_exhaustion=80)                                  # their targets (others 400)
+BANDS = ("new", 2, 4, 8, 16, 32, 128)       # cells coming into view: never seen, or last seen 2-3, 4-7, ... frames ago
+PRIORITY = dict(           # piece-choice weights (others 1): counterexamples to world-model habits 3, rare events 6
+    **dict.fromkeys(("iron_sword_after_pickaxe", "stone_sword_after_pickaxe", "iron_at_old_furnace", "iron_press_spell",
+                     "furnace_then_no_iron_press", "iron_press_no_furnace", "second_furnace", "place_plant",
+                     "more_sapling", "unlock_eat_plant", "more_diamond", "more_iron_pickaxe", "coal_no_pickaxe",
+                     "iron_craft_low_stone", "repeat_iron_craft", "iron_press_missing_one", "iron_craft_diagonal",
+                     "first_furnace_3stone", "iron_press_furnace_in_view", "iron_sword_after_diamond",
+                     "wood_press_table_in_view", "wood_press_after_craft", "wood_craft_7_wood",
+                     "repeat_table_in_view"), 3),
+    **dict.fromkeys(("death_lava_walk", "unlock_collect_diamond", "rollout_diamond", "rollout_plant",
+                     *(f"{k}_{c}" for k in ("death", "episode") for c in CAUSES[1:7])), 6),
+    iron_pickaxe_first=5, iron_craft_no_stone_sword=6, full_view_32=5, sleep_onset=12,
+    **dict(zip((f"cells_{b}" for b in BANDS), (0, 4, 32, 32, 20, 8, 8))))   # never-seen cells come by themselves
+TARGETS = dict(death_lava=100, death_lava_walk=100, death_zombie=270, death_skeleton=110, death_thirst=150,
+               death_starvation=120, death_exhaustion=80, full_view_32=20000, rollout_diamond=130, more_diamond=600,
+               unlock_collect_diamond=300,
+               more_iron_pickaxe=540, coal_no_pickaxe=600, repeat_iron_craft=200, sleep_onset=3000,
+               iron_press_no_furnace=700, iron_press_spell=80, iron_pickaxe_first=420, iron_craft_no_stone_sword=210,
+               wood_press_table_in_view=850, wood_press_after_craft=470, repeat_table_in_view=530,
+               rollout_plant=130, **{f"episode_{k}": 40 for k in CAUSES[1:7]},
+               **dict(zip((f"cells_{b}" for b in BANDS), (8e5, 2.3e5, 4.4e5, 4.8e5, 3.8e5, 2.3e5, 5e4))))  # others 400
 D4 = jnp.asarray([[0, -1], [0, 1], [-1, 0], [1, 0]])                     # moves 1..4 and facing directions 1..4
 WALK = jnp.asarray([BT.GRASS.value, BT.SAND.value, BT.PATH.value])
 PLACED = jnp.asarray([BT.CRAFTING_TABLE.value, BT.FURNACE.value, BT.PLANT.value, BT.RIPE_PLANT.value])
-INF, DAY = 16384, 0.6
+INF, DUSK = 16384, 0.35
+SLEEP_KEEP = 8                                # a long sleep keeps this many steps at each end
 env = make_craftax_env_from_name("Craftax-Classic-Symbolic-v1", False)
 EP = env.default_params
 
@@ -156,9 +175,10 @@ def plan_step(s, pl, key):
     return a.astype(jnp.int32), jnp.where(at, 0, jnp.where(dn.min() < INF, dn.min() + 1, INF)), at | (dn.min() < INF)
 
 
-def plan_sample(pl, lo, hi, key):
-    f = pl["field"].astype(jnp.int32)
-    m = (f >= lo) & (f <= hi)
+def plan_sample(pl, lo, hi, hide, key):
+    "A point at planner distance [lo, hi] from the plan's target; with hide, out of the target's 7 x 9 view."
+    f, d = pl["field"].astype(jnp.int32), jnp.abs(jnp.indices((64, 64)) - pl["target"][:, None, None])
+    m = (f >= lo) & (f <= hi) & (~hide | (d[0] >= 4) | (d[1] >= 5))
     i = jnp.argmax(jnp.where(m, jax.random.gumbel(key, f.shape), -jnp.inf).ravel())
     return jnp.stack([i // 64, i % 64]).astype(jnp.int32), m.any()
 
@@ -167,7 +187,7 @@ def safe(s):
     p, need = s.player_position, jnp.minimum(jnp.minimum(s.player_food, s.player_drink), s.player_energy)
     calm = lambda z, k, a: ~_near(s.zombies, p, z) & ~_near(s.skeletons, p, k) & ~_near(s.arrows, p, a)
     keep = ~s.is_sleeping & calm(2, 4, 2) & (need >= 2) & (s.player_health >= 4)
-    return keep & calm(3, 4, 3) & (need >= 3) & (s.player_health >= 6) & (s.light_level >= DAY), keep
+    return keep & calm(3, 4, 3) & (s.player_health >= 5) & (s.light_level >= DUSK), keep
 
 
 def salience(s):
@@ -362,6 +382,23 @@ def since(x, bnd, reverse=False):
     return out
 
 
+def full_view(pos, bnd, far=(4, 5), tol=1, hmax=128):
+    """(T + 1, E) trip time of a return at each frame (0: none): the agent is back within tol tiles of a spot A it
+    left, and on the way it was far rows or columns away (4, 5: A out of the 7 x 9 view, a full-view return)."""
+    T1, r, c = len(pos), pos[..., 0].astype(np.int32), pos[..., 1].astype(np.int32)
+    phase, out, dur = np.zeros(r.shape, np.int8), np.zeros(r.shape, bool), np.zeros(r.shape, np.int32)
+    for k in range(1, min(hmax, T1 - 1) + 1):      # k frames back: approach (0), away (1), departure (2), new piece (3)
+        ph, o, du = phase[k:], out[k:], dur[k:]
+        ph[(ph < 2) & bnd[:T1 - k]] = 3
+        dr, dc = np.abs(r[:T1 - k] - r[k:]), np.abs(c[:T1 - k] - c[k:])
+        near = (dr <= tol) & (dc <= tol)
+        dep = (ph == 1) & near
+        du[dep], ph[dep] = k, 2
+        o |= (ph < 2) & ~near & ((dr >= far[0]) | (dc >= far[1]))
+        ph[(ph == 0) & ~near] = 1
+    return np.where((phase == 2) & out, dur, 0)
+
+
 def events(L, R):
     "{name: (T, E) bool}: the event types the packer balances."
     a, bnd = R["act"].astype(int), R["done"] | R["timeout"]
@@ -369,16 +406,17 @@ def events(L, R):
     was, h = hud[:-1], {k: i for i, k in enumerate(HUD)}
     up, dn = (hud[1:] > was) & ~bnd[..., None], (hud[1:] < was) & ~bnd[..., None]
     table, furnace, face = L["table"][:-1], L["furnace"][:-1], L["facing"][:-1]
+    live = ~bnd & ~L["sleeping"][:-1]                         # a press does nothing while asleep
     ev = {f"unlock_{k}": ((ach[1:] & ~ach[:-1]) >> i & 1).astype(bool) & ~bnd for i, k in enumerate(ACH)}
     ev |= {f"more_{k}": up[..., h[k]] for k in HUD[4:]}
     for act, k, name in ((P_STONE, "stone", "stone"), (P_TABLE, "wood", "table"), (P_FURNACE, "stone", "furnace"),
                          (P_PLANT, "sapling", "plant")):
         ok = (a == act) & dn[..., h[k]]
-        ev[f"place_{name}"], ev[f"place_{name}_failed"] = ok, (a == act) & ~ok & ~bnd
+        ev[f"place_{name}"], ev[f"place_{name}_failed"] = ok, (a == act) & ~ok & live
     ev["second_table"], ev["second_furnace"] = ev["place_table"] & table, ev["place_furnace"] & furnace
-    ev["craft_failed"] = (a >= 11) & ~up[..., h["wood_pickaxe"]:].any(-1) & table & ~bnd
+    ev["craft_failed"] = (a >= 11) & ~up[..., h["wood_pickaxe"]:].any(-1) & table & live
     has_iron = (was[..., [h["wood"], h["stone"], h["coal"], h["iron"]]] >= 1).all(-1)
-    ev["iron_press_no_furnace"] = np.isin(a, (13, 16)) & table & ~furnace & has_iron & ~bnd
+    ev["iron_press_no_furnace"] = np.isin(a, (13, 16)) & table & ~furnace & has_iron & live
     ev["iron_press_spell"] = ev["iron_press_no_furnace"] & (since(a == P_FURNACE, bnd) <= 10)
     ev["iron_at_old_furnace"] = (up[..., h["iron_pickaxe"]] | up[..., h["iron_sword"]]) & (
         since(a == P_FURNACE, bnd) > 31)
@@ -390,51 +428,122 @@ def events(L, R):
         ev[f"{tier}_sword_after_pickaxe"] = up[..., s] & (was[..., p] > 0) & (was[..., s] == 0)
     weak = np.select([np.isin(face, (BT.STONE.value, BT.COAL.value)), face == BT.IRON.value, face == BT.DIAMOND.value],
                      [was[..., h[k + "_pickaxe"]] == 0 for k in ("wood", "stone", "iron")], False)
-    ev["mine_weak_tool"] = (a == DO) & weak & ~bnd
+    ev["mine_weak_tool"] = (a == DO) & weak & live
+    ev["coal_no_pickaxe"] = (a == DO) & (face == BT.COAL.value) & (was[..., h["wood_pickaxe"]] == 0) & live
+    ip, isw = h["iron_pickaxe"], h["iron_sword"]
+    iron_ok = up[..., ip] | up[..., isw]
+    ev["iron_craft_no_stone_sword"] = iron_ok & (was[..., h["stone_sword"]] == 0)
+    ev["iron_craft_low_stone"] = iron_ok & (was[..., h["stone"]] <= 2)
+    ev["repeat_iron_craft"] = (up[..., ip] & (was[..., ip] > 0)) | (up[..., isw] & (was[..., isw] > 0))
+    missing = (was[..., [h["wood"], h["stone"], h["coal"], h["iron"]]] == 0).sum(-1)
+    ev["iron_press_missing_one"] = np.isin(a, (13, 16)) & table & furnace & (missing == 1) & live
+    tl, fid = L["tiles"][:-1], BT.FURNACE.value - 2                       # the furnace only on a diagonal
+    diag = (tl[..., [2, 2, 4, 4], [3, 5, 3, 5]] == fid).any(-1) & ~(tl[..., [2, 3, 3, 4], [4, 3, 5, 4]] == fid).any(-1)
+    ev["iron_craft_diagonal"] = iron_ok & diag
+    inview = lambda b: (tl == b - 2).any((-1, -2))
+    ev["iron_press_furnace_in_view"] = ev["iron_press_no_furnace"] & inview(BT.FURNACE.value)
+    ev["iron_sword_after_diamond"] = up[..., isw] & ((ach[:-1] >> ACH.index("collect_diamond")) & 1).astype(bool)
+    wood_press = np.isin(a, (11, 14)) & (was[..., h["wood"]] >= 1) & ~table & live
+    ev["wood_press_table_in_view"] = wood_press & inview(BT.CRAFTING_TABLE.value)
+    ev["wood_press_after_craft"] = wood_press & (since(up[..., h["wood_pickaxe"]:].any(-1), bnd) <= 31)
+    ev["wood_craft_7_wood"] = (up[..., h["wood_pickaxe"]] | up[..., h["wood_sword"]]) & (was[..., h["wood"]] >= 7)
+    ev["repeat_table_in_view"] = ev["place_table"] & inview(BT.CRAFTING_TABLE.value)
+    ev["first_furnace_3stone"] = ev["unlock_place_furnace"] & (was[..., h["stone"]] >= 3)
+    ev["sleep_onset"] = L["sleeping"][1:] & ~L["sleeping"][:-1] & ~bnd
     ev["eat"], ev["drink"] = up[..., h["food"]], up[..., h["drink"]]
     ev["damage"] = dn[..., h["health"]] & (L["zombie"][:-1] | L["skeleton"][:-1])
-    ev["sleep_by_day"] = (a == SLEEP) & (lt[:-1] > 0.6) & ~L["sleeping"][:-1] & ~bnd
+    ev["sleep_by_day"] = (a == SLEEP) & (lt[:-1] > 0.6) & live
     ev["dusk"], ev["dawn"] = (lt[:-1] >= 0.5) & (lt[1:] < 0.5) & ~bnd, (lt[:-1] < 0.5) & (lt[1:] >= 0.5) & ~bnd
     ev |= {f"death_{k}": R["done"] & (R["cause"] == i) for i, k in enumerate(CAUSES[1:8], 1)}
     ev["death_lava_walk"] = ev["death_lava"] & (R["bmode"] != core.FORCED)          # not a single forced step
     ev |= {f"return_scale{k}": (R["rend"] == core.REACHED) & (R["rscale"] == k) for k in range(len(TRIPS.scales))}
+    m = full_view(L["pos"], bnd, hmax=32) > 0
+    ev["full_view_32"] = m[1:] & ~m[:-1]                              # a run of frames back near A counts once
     return ev
 
 
-def pack_pools(pools, t_out=2000, e_out=250, cap=400, diamonds=450, dia_share=0.5):
-    """Cut the pools into pieces; take the pieces with diamonds first (most first, until they hold `diamonds` or
-    dia_share of the set), then balance the events (targets min(supply, cap or DEATHS), weights PRIORITY); pack.
+def recall(pos, bnd, edges=(2, 4, 8, 16, 32, 128)):
+    """(T, E, 7) cells coming into the 7 x 9 view per transition: never seen in the episode, or by frames since they
+    were last on screen, in bands from `edges` (the border-cell ages of a packed set, with episodes for pieces)."""
+    p, (T1, E) = pos.astype(np.int32), pos.shape[:2]
+    e, i, j = np.ix_(np.arange(E), np.arange(7), np.arange(9))
+    last, out = np.full((E, 70, 72), -1, np.int32), np.zeros((T1 - 1, E, len(edges) + 1), np.int16)
+    last[e, p[0, :, :1, None] + i, p[0, :, 1:, None] + j] = 0          # the map padded by the view's half size
+    for t in range(1, T1):
+        r, c, d = p[t, :, :1, None] + i, p[t, :, 1:, None] + j, (p[t] - p[t - 1])[:, :, None, None]
+        last[bnd[t - 1]] = -1                                            # a new episode
+        enter = ~((i + d[:, 0] >= 0) & (i + d[:, 0] <= 6) & (j + d[:, 1] >= 0) & (j + d[:, 1] <= 8))
+        seen = last[e, r, c]
+        k = np.searchsorted(edges, np.where(seen < 0, 0, t - seen), side="right")
+        out[t - 1] = np.stack([((k == b) & enter).sum((1, 2)) for b in range(len(edges) + 1)], -1)
+        out[t - 1, bnd[t - 1]] = 0
+        last[e, r, c] = t
+    return out
+
+
+def rollouts(L, R, bnd, ev, maxlen=1000):
+    """Complete rollouts of under maxlen steps that the packer must not cut: episode start -> first diamond, sapling ->
+    planted -> eaten ripe, whole episodes that end in a death (in every 4th world, as there are plenty).
+    -> protect (T, E), {name: (T, E) bool at the end}."""
+    T, E = bnd.shape
+    names = ["rollout_diamond", "rollout_plant"] + [f"episode_{k}" for k in CAUSES[1:7]]
+    protect, out = np.zeros((T, E), bool), {k: np.zeros((T, E), bool) for k in names}
+    meal = (R["act"] == DO) & (L["facing"][:-1] == BT.RIPE_PLANT.value) & ev["eat"]
+    for e in range(E):
+        ends = np.flatnonzero(bnd[:, e])
+        for a, z in zip(np.r_[0, ends + 1], np.r_[ends, T - 1]):        # the transitions a..z of one episode
+            d = np.flatnonzero(ev["unlock_collect_diamond"][a:z + 1, e])
+            spans = [(a, a + d[0], "rollout_diamond")] if len(d) else []
+            spans += [(a, z, f"episode_{CAUSES[R['cause'][z, e]]}")] if R["done"][z, e] and e % 4 == 0 else []
+            for m in np.flatnonzero(meal[a:z + 1, e]) + a:
+                pl = np.flatnonzero(ev["place_plant"][a:m, e])
+                sp = np.flatnonzero(ev["more_sapling"][a:a + pl[-1], e]) if len(pl) else []
+                spans += [(a + sp[-1], m, "rollout_plant")] if len(sp) else []
+            for s0, s1, name in spans:
+                if s1 - s0 < maxlen and name in out:
+                    protect[s0:s1 + 1, e], out[name][s1, e] = True, True
+    return protect, out
+
+
+def pool_pieces(d):
+    """Cut a pool into pieces (never inside a complete rollout; long sleeps lose their middle) and count their events
+    and the cells coming into view. -> [(world, first, last, ends in a death)], counts (S, K), names (K)."""
+    L, R = dict(np.load(d / "labels.npz")), dict(np.load(d / "records.npz"))
+    ev, act, bnd, hud = events(L, R), R["act"].astype(int), R["done"] | R["timeout"], L["hud"]
+    protect, roll = rollouts(L, R, bnd, ev)
+    ev |= roll
+    quiet = (R["rew"] == 0) & ~(hud[1:] != hud[:-1]).any(-1) & (R["rmode"] == 0) & ~bnd & ~protect
+    use = (act == DO) & (~np.isin(L["facing"][:-1], np.asarray(WALK)) | L["facing_mob"][:-1] | L["facing_cow"][:-1])
+    busy = np.logical_or.reduce(list(ev.values())) | (act >= SLEEP) | use | (R["rmode"] > 0) | (
+        R["bmode"] >= core.REPEAT) | protect
+    awake = ~L["sleeping"][:-1]
+    skip = ~awake & (since(awake, bnd) > SLEEP_KEEP) & (since(awake, bnd, True) > SLEEP_KEEP) & ~protect
+    ev |= {f"cells_{b}": c for b, c in zip(BANDS, np.moveaxis(recall(L["pos"], bnd), -1, 0))}
+    names, s = sorted(ev), core.pieces(bnd, R["done"], busy, quiet, skip)
+    cs = np.concatenate([np.zeros((1,) + bnd.shape[1:] + (len(names),), np.int32), np.cumsum(np.stack(
+        [ev[k] for k in names], -1), 0, dtype=np.int32)])
+    return s, np.asarray([cs[z + 1, e] - cs[a, e] for e, a, z, _ in s]).reshape(len(s), len(names)), names
+
+
+def pack_pools(pools, t_out=2000, e_out=250, cap=400, cut=pool_pieces):
+    """Pick pieces that balance the events and the cells coming into view (targets min(supply, cap or TARGETS),
+    weights PRIORITY), then pack them.
     -> src (t_out + 1, e_out, 3): (pool, world, frame) of every frame; done, truncated; event supply, picked."""
     segs, counts = [], []
     for pi, d in enumerate(pools):
-        L, R = dict(np.load(d / "labels.npz")), dict(np.load(d / "records.npz"))
-        ev, act, bnd, hud = events(L, R), R["act"].astype(int), R["done"] | R["timeout"], L["hud"]
-        names = sorted(ev)
-        quiet = (R["rew"] == 0) & ~(hud[1:] != hud[:-1]).any(-1) & (R["rmode"] == 0) & ~bnd
-        use = (act == DO) & (~np.isin(L["facing"][:-1], np.asarray(WALK)) | L["facing_mob"][:-1] | L["facing_cow"][:-1])
-        busy = np.logical_or.reduce(list(ev.values())) | (act >= SLEEP) | use | (R["rmode"] > 0) | (
-            R["bmode"] >= core.REPEAT)
-        s = core.pieces(bnd, R["done"], busy, quiet)
-        cs = np.concatenate([np.zeros((1,) + bnd.shape[1:] + (len(names),), np.int32), np.cumsum(np.stack(
-            [ev[k] for k in names], -1), 0, dtype=np.int32)])
-        counts += [cs[z + 1, e] - cs[a, e] for e, a, z, _ in s]
-        segs += [(pi * 10 ** 6 + e, a, z, dd) for e, a, z, dd in s]
-    counts, n = np.asarray(counts), np.asarray([z - a + 1 for _, a, z, _ in segs])
-    dia = counts[:, names.index("more_diamond")]
-    order, first = [i for i in np.lexsort((-n, -dia)) if dia[i] > 0], np.zeros(len(segs), bool)
-    first[order[:min(np.searchsorted(np.cumsum(n[order]), dia_share * t_out * e_out),
-                     np.searchsorted(np.cumsum(dia[order]), diamonds) + 1)]] = True
-    target = np.minimum(counts.sum(0), [DEATHS.get(k, cap) for k in names])
-    picked, got = core.choose(segs, counts, 0.98 * (t_out + 1) * e_out, target, [PRIORITY.get(k, 1.0) for k in names],
-                              first)
+        s, c, names = cut(d)
+        segs, counts = segs + [(pi * 10 ** 6 + e, a, z, dd) for e, a, z, dd in s], counts + [c]
+    counts, n = np.concatenate(counts), np.asarray([z - a + 1 for _, a, z, _ in segs])
+    target = np.minimum(counts.sum(0), [TARGETS.get(k, cap) for k in names])
+    picked, got = core.choose(segs, counts, 0.98 * (t_out + 1) * e_out, target, [PRIORITY.get(k, 1.0) for k in names])
     src, done, trunc = core.pack(segs, picked, list(np.argsort(-(counts > 0).sum(1) / n)), t_out, e_out)
     src = np.stack([src[..., 0] // 10 ** 6, src[..., 0] % 10 ** 6, src[..., 1]], -1)
     return src, done, trunc, dict(zip(names, counts.sum(0).tolist())), dict(zip(names, got.tolist()))
 
 
-def write_set(pools, out):
+def write_set(pools, out, cut=pool_pieces):
     "train.npz in the benchmark layout and train_labels.npz (side labels, not published) from the packed pools."
-    src, done, trunc, supply, got = pack_pools(pools)
+    src, done, trunc, supply, got = pack_pools(pools, cut=cut)
     frames, lab, rec = np.zeros(src.shape[:2] + (63, 63, 3), np.uint8), {}, {}
     for pi, d in enumerate(pools):
         m = src[..., 0] == pi
@@ -444,17 +553,20 @@ def write_set(pools, out):
         for k, v in np.load(d / "records.npz").items():
             mt, st = m[:-1], src[:-1]
             rec.setdefault(k, np.zeros(done.shape + v.shape[2:], v.dtype))[mt] = v[st[..., 2][mt], st[..., 1][mt]]
+    starts = np.concatenate([np.ones((1, done.shape[1]), bool), (done | trunc)[:-1]]) & (lab["step"][:-1] == 0)
     meta = dict(env="Craftax-Classic-Pixels-v1", split="train", transitions=int(done.size), envs=done.shape[1],
                 steps=done.shape[0], num_actions=A, alignment="actions[t, e] and rewards[t, e] describe frames[t, e] "
                 "-> frames[t + 1, e]; a done or truncated transition stores the next piece's first frame.",
                 boundaries="dones marks deaths only; truncated marks pieces cut at quiet transitions (no reward, no "
-                "inventory or vitals change, not in a return trip) or ended by the time limit.",
+                "inventory or vitals change, not in a return trip or a complete rollout) or ended by the time limit; "
+                "starts marks the first frame of every piece that begins at an episode start (step 0).",
                 policy="; ".join(f"{w:.0%} {p}" for p, _, w in POLICIES) + " (per episode; switches inside them)",
-                recipe="collect/collect.py: behaviour schedule, return trips (half walked by the learned walker), "
-                "event-balanced pieces of 250-1000 transitions", pools=[p.name for p in pools], events_supply=supply,
-                events_picked=got)
+                recipe="collect/collect.py: behaviour schedule, short loops out of view and back and longer return "
+                "trips, event-balanced pieces of 128-512 transitions, complete rollouts up to 1000",
+                pools=[p.name for p in pools],
+                events_supply=supply, events_picked=got)
     np.savez(out / "train.npz", frames=frames, actions=rec["act"].astype(np.int16), dones=done, truncated=trunc,
-             rewards=rec["rew"].astype(np.float32), meta=json.dumps(meta))
+             starts=starts, rewards=rec["rew"].astype(np.float32), meta=json.dumps(meta))
     np.savez(out / "train_labels.npz", src=src, **lab, **{k: v for k, v in rec.items() if k != "done"}, done=done,
              trunc=trunc)
     return meta

@@ -49,17 +49,24 @@ every hazard below.
 
 ## Return trips
 
-Memory needs places that leave the view and come back. When the player is safe (daylight, awake, healthy, fed and
-rested, no mob near), about once per 30 steps a trip draws a walking distance (2-3, 4-7, 8-15, 16-31, 32-63 or
-64-127 tiles, mostly 4-15) and a tour. A is the start, R a place seen earlier (distinctive views are preferred), F a
-point at that distance, G one at half of it. Tours: R (back to an old place), FA (out and back), GR, FGAG (A-B-C-A-C)
-and RFA.
+A world model has to remember what left the view: a few rows (peeks, back-and-forth) and the whole view. When the
+player is safe (daylight or dusk, awake, healthy, needs not low, no mob within 3 tiles), about every 3 steps of free
+play a trip starts. It draws a walking distance and a tour:
 
-A breadth-first planner over grass, sand and path (no mobs, not next to lava) walks the legs, or, in half the trips,
-the learned goal walker (the 60% policy steered by its goal head). One planner step in ten is the policy's own
-action. Waypoints may get a pause, and the end gets a few free steps. Danger, no path, being stuck or running out of
-steps ends a trip. A new table or furnace starts an out-and-back of 8+ tiles in 30% of the cases, so the agent comes
-back to it.
+| distance | trips | tours |
+|---|---:|---|
+| 2-3 tiles (peeks) | 38% | mostly back and forth two or three times (A-B-A-B-A), out and back |
+| 4-8 tiles, the start leaves the view (4+ rows or 5+ columns) | 38% | out and back, back and forth, A-B-C-A |
+| 9-16 tiles | 17% | out and back, back and forth, A-B-C-A |
+| 17-63 tiles | 7% | out and back, A-B-C-A, back to an old place |
+
+A is the start, B a point at that distance and C one at half of it; an old place is a spot seen earlier (distinctive
+views are preferred). A breadth-first planner over grass, sand and path (no mobs, not next to lava) walks most legs;
+the learned goal walker (the 60% policy steered by its goal head) walks 10% of the 4-8 tile loops, 30% of the 9-16
+and half of the longer trips, as it takes about two steps per tile. One planner step in ten is the policy's own
+action. Waypoints may get 1 to 6 steps of play (more on long trips), and the end gets 1 to 6 free steps. Danger for
+more than 10 steps, no path, being stuck or running out of steps ends a trip. A new table or furnace starts an
+out-and-back of 4+ tiles in 30% of the cases, so the agent comes back to it.
 
 ## Packer
 
@@ -67,15 +74,21 @@ A pool is one long recording (512 worlds x 4000 steps, about 2M transitions). Th
 
 1. marks every transition **busy** (an event from `events()`, a craft, place or sleep press, the do action on anything
    but ground, a trip step, a forced or repeated action) or **quiet** (no reward, no inventory or vitals change, no
-   trip);
-2. drops stretches with nothing busy for over 64 steps (16 steps kept at each end) and cuts the rest into pieces of
-   about 250 to 1000 transitions that end at an episode end or on a quiet transition, never on an event;
-3. picks pieces to balance events, not frames: first the pieces with diamonds (most first, up to 450 diamonds or half
-   the set), then each time the piece with the best gain per (300 + its length). Each event type is worth up to its
-   target (its supply, at most 400; deaths have their own targets per cause); counterexamples to known world-model
-   flaws and a few rare events weigh 3x, deaths 6x;
-4. packs the pieces into 250 streams of 2001 frames (longest first, first fit) and fills the free tails with the starts
-   of spare pieces (the most eventful first).
+   trip); a press while asleep does nothing in the game, so it is no event;
+2. protects **complete rollouts** of under 1000 steps, which are never cut: episode start to the first diamond,
+   sapling collected to planted to eaten ripe (plants ripen after 600 steps), and whole episodes that end in a death
+   (in every 4th world, as there are plenty);
+3. drops stretches with nothing busy for over 64 steps (16 steps kept at each end) and the middle of every sleep
+   (8 steps kept at each end), and cuts the rest into pieces of 128 to about 512 transitions that end at an episode
+   end or on a quiet transition, never on an event; a protected rollout makes its piece as long as it needs;
+4. picks pieces to balance events, not frames: each time the piece with the best gain per (300 + its length). Each
+   event type is worth up to its target (its supply, at most 400 unless set); counterexamples to known world-model
+   flaws and a few rare events weigh 3x, first diamonds, deaths and complete rollouts 6x, sleep onsets 12x. The cells
+   coming into view are events too, by how long ago they were last on screen (2-3, 4-7, 8-15, 16-31, 32-127, 128+
+   frames), with targets per band; 4-7 and 8-15 weigh most, cells never seen before come by themselves;
+5. packs the pieces into 250 streams of 2001 frames (longest first, first fit) and fills the free tails with the starts
+   of spare pieces (the most eventful first). Every stream keeps at least one frame for such a tail, so a picked piece
+   always keeps its last transition (and its death).
 
 ## Data format
 
@@ -88,10 +101,12 @@ A pool is one long recording (512 worlds x 4000 steps, about 2M transitions). Th
 | rewards | float32 [2000, 250] | |
 | dones | bool [2000, 250] | deaths only |
 | truncated | bool [2000, 250] | a piece ends here (cut on a quiet transition, or the time limit) |
+| starts | bool [2000, 250] | the first frame of a piece that begins at an episode start (step 0): a real game start |
 | meta | json string | recipe, policies, event supply and picks |
 
 `actions[t, e]` and `rewards[t, e]` take `frames[t, e]` to `frames[t + 1, e]`. After a done or truncated transition,
-`frames[t + 1, e]` is the first frame of the next piece.
+`frames[t + 1, e]` is the first frame of the next piece. Many pieces begin mid-game; `starts` marks the ones that
+begin at a real game start, so a trainer can sample game starts from them.
 
 `train_labels.npz` has side labels in the same layout, for analysis: per frame the true position, direction, the 7 x 9
 view as tile ids, the HUD numbers, achievements, light, the facing block and table, furnace and mobs near; per
