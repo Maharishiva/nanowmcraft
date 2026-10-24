@@ -84,7 +84,7 @@ Play the best model. No dataset or GPU needed; a Mac CPU works:
 git clone https://github.com/Maharishiva/tinywmcraft && cd tinywmcraft
 uv venv --python 3.11 && source .venv/bin/activate
 uv pip install -r pyproject.toml --extra play
-curl -L --fail --create-dirs -o runs/best/model.npz https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/main/iteration3/seed{PLAYER_SEED}/model.npz
+curl -L --fail --create-dirs -o runs/best/model.npz https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/main/iteration3/seed0/model.npz
 python play_wm.py --model runs/best/model.npz
 ```
 
