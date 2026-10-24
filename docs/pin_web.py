@@ -6,9 +6,9 @@ tutorial's world (TUT_SEED, picked with seeds.html for this file).
     python docs/pin_web.py --wgr docs/play_int8.wgr --revision <commit> --yes       # already uploaded: pin only
 
 The upload is one commit to --repo (default maharishiva/tinywmcraft-v3) with the .wgr at web/<name> and, if given,
-the matching .onnx files (--onnx). The pinned file is downloaded back at that revision and must have the same
-sha256. The site can only load it from a public repo: the script says so when the repo is private. Needs
-huggingface_hub and a token with write access (huggingface-cli login).
+other files next to it (--also: the matching .onnx, the fp16 file to fall back to). The pinned file is downloaded
+back at that revision and must have the same sha256. The site can only load it from a public repo: the script says so
+when the repo is private. Needs huggingface_hub and a token with write access (hf auth login).
 """
 import argparse
 import hashlib
@@ -56,7 +56,7 @@ def rewrite(js, url, sha, tut):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--wgr", type=Path, default=DOCS / "play_int8.wgr")
-    p.add_argument("--onnx", type=Path, nargs="*", default=[], help="also upload these next to it (web/<name>)")
+    p.add_argument("--also", type=Path, nargs="*", default=[], help="also upload these next to it (web/<name>)")
     p.add_argument("--repo", default="maharishiva/tinywmcraft-v3")
     p.add_argument("--revision", help="pin this commit of the repo instead of uploading")
     p.add_argument("--tut-seed", help="the tutorial's world for this file, a seed code or number (seeds.html)")
@@ -73,7 +73,7 @@ def main():
     rev = a.revision or "<new commit>"
     url = f"https://huggingface.co/{a.repo}/resolve/{rev}/{path}"
     if not a.yes:
-        print(f"dry run: would upload {path}{''.join(', web/' + o.name for o in a.onnx)} to {a.repo}" if not a.revision
+        print(f"dry run: would upload {path}{''.join(', web/' + o.name for o in a.also)} to {a.repo}" if not a.revision
               else f"dry run: would pin {a.repo} at {a.revision}")
         new = rewrite(PLAY.read_text(), url, sha, tut).splitlines()
         for o, n in zip(PLAY.read_text().splitlines(), new):
@@ -82,7 +82,7 @@ def main():
         return
     if not a.revision:
         ops = [CommitOperationAdd(path_in_repo=path, path_or_fileobj=str(a.wgr))]
-        ops += [CommitOperationAdd(path_in_repo=f"web/{o.name}", path_or_fileobj=str(o)) for o in a.onnx]
+        ops += [CommitOperationAdd(path_in_repo=f"web/{o.name}", path_or_fileobj=str(o)) for o in a.also]
         rev = api.create_commit(a.repo, ops, commit_message=f"web: {path}, sha256 {sha[:8]}").oid
         url = f"https://huggingface.co/{a.repo}/resolve/{rev}/{path}"
     got = sha256(hf_hub_download(a.repo, path, revision=rev))
