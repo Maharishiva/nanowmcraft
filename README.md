@@ -51,12 +51,12 @@ Every diamond clip and the best glitches go up on the site with your handle.
 **13.9M parameters** (5.2M tokenizer, 8.6M world model), trained on [500k transitions][HF_DATASET] of Craftax-Classic pixels and actions,
 played by RL agents that reach diamonds, die in every way the game allows, break their own crafting habits and walk back to places they saw before ([dataset](#dataset)).
 No game state, tile labels or pretrained features enter the model.
-**One training run is under 10 minutes on one A100, about $0.1 of compute; the eval takes about 3 minutes more.**
+**One training run is under 10 minutes on one A100, about $0.1 of compute; the eval takes under 3 minutes more.**
 
 | file | what it is |
 |---|---|
-| [train.py](train.py) | iteration 3, the one to beat: tokenizer and flow-matching world model with reward and termination heads |
-| [kernels.py](kernels.py) | fused Pallas kernels for attention, norms and activations on NVIDIA GPUs |
+| [train.py](train.py) | iteration 3, the one to beat: tokenizer and flow-matching world model with reward and termination heads, about 350 lines |
+| [kernels.py](kernels.py) | two fused Pallas kernels for NVIDIA GPUs (attention, and a gated residual add with the next norm); plain XLA elsewhere |
 | [eval.py](eval.py) | the frozen benchmark |
 | [make_eval.py](make_eval.py) | builds the eval clips from held-out play |
 | [collect/](collect/) | the data collector: agents, the behaviour schedule, return trips and the packer |
@@ -68,13 +68,12 @@ No game state, tile labels or pretrained features enter the model.
 
 | # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | train s | code | checkpoints |
 |---|---|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 0.422 ± 0.025 | 37.6 | 0.05 | 0.087 | 0.923 | 558 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
-| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.571 ± 0.015 | 33.1 | 0.59 | 0.109 | 0.936 | 584 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
-| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | 0.602 ± 0.005 | 25.9 | 0.62 | 0.107 | 0.897 | 568 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
+| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | {SCORE_IT1} ± {SD_IT1} | {GFVD_IT1} | {LOGIC_IT1} | {MEMORY_IT1} | {RAP_IT1} | {TRAIN_S_IT1} | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
+| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | {SCORE_IT2} ± {SD_IT2} | {GFVD_IT2} | {LOGIC_IT2} | {MEMORY_IT2} | {RAP_IT2} | {TRAIN_S_IT2} | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
+| 3 | [train.py](train.py): a tokenizer trained on clean, masked and noised frames, flow matching with a shortcut loss, Muon, two fused kernels, half the windows start a game | {SCORE_IT3} ± {SD_IT3} | {GFVD_IT3} | {LOGIC_IT3} | {MEMORY_IT3} | {RAP_IT3} | {TRAIN_S_IT3} | [{COMMIT_IT3}](https://github.com/Maharishiva/tinywmcraft/blob/{COMMIT_IT3}/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
 
-Three snapshots of our own research so far, each retrained on the benchmark v3 data. Score: the north star, 0 for a trivial model and 1 for the real game ([evaluation](#evaluation)); gFVD shown times 10^4.
+Three snapshots of our own research so far, each trained on the benchmark data. Score: the north star, 0 for a trivial model and 1 for the real game ([evaluation](#evaluation)); gFVD shown times 10^4.
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py` on the public eval clips; train s is the slowest seed.
-The benchmark v2 table (old data, ranked on gFVD) stays on the site.
 Beat iteration 3 and yours is iteration 4: the crown goes next to your GitHub login, and the browser player switches to your model. How: [program.md](program.md). The same table on the site, with the score over time: [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
 
 ## Quickstart
@@ -112,26 +111,35 @@ Details, the model interface and how to submit: [program.md](program.md).
 
 ## How it works
 
-- **Tokenizer.** A 63×63 frame and the one before it become a 4×4×32 latent: the 81 tiles of 7×7 pixels, from both frames, are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks; the decoder mirrors it, from the latent alone. Training mixes clean, half-masked and noised frames, always reconstructing the clean one.
+- **Tokenizer.** A 63×63 frame becomes a 4×4×32 latent: the 81 tiles of 7×7 pixels are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks; the decoder mirrors it. A third of each batch is clean, a third has half its tiles grey and a third is noised; the target is always the clean frame. Without the masked and noised thirds, game logic falls apart.
 - **World model.** A six-block, width-256 transformer alternates spatial attention over the 16 latent tokens with causal attention across 32 frames. The action, each frame's noise level and the sampler's step size condition adaLN-zero blocks; flow matching predicts the clean latent, and eight Euler steps generate each frame.
-- **Losses.** Next to flow matching, a shortcut loss teaches one step to land where two half steps would, a temporal loss matches how the latents change from frame to frame, and late in training some context frames are swapped for the model's own predictions, so it learns to go on from an imperfect past.
-- **Heads.** A reward head (two-hot over 255 symlog bins) and a termination head read each frame's mean token, so the model predicts rewards and episode ends along with frames.
-- **Optimizer.** NorMuon, Muon with a learning rate adapted per neuron, on every matrix and conv kernel; AdamW on embeddings, biases and norms; warmup, constant, then linear decay over the last 20% of steps.
-- **Kernels.** At width 256 the step is bound by memory traffic, so attention, modulated norms, gated residuals and GELU run as fused Pallas kernels on NVIDIA GPUs and fall back to XLA elsewhere.
-- **Sampling.** Spatial attention stays within a frame and temporal attention is causal, so the past frames' keys and values are computed once per new frame and each Euler step runs only the new frame. The browser player does the same: about 7 GFLOP per keypress on WebGPU.
+- **Losses.** Next to flow matching, a shortcut loss teaches one step to land where two half steps would. Half of the training windows start at a real game start, so the model can also imagine a first frame from nothing; the browser player starts every world that way.
+- **Heads.** A reward head (two-hot over 255 symlog bins) and a termination head read each frame's mean token, so the model predicts rewards and episode ends along with frames. Their gradient into the trunk drops to a tenth in the second half of training.
+- **Optimizer.** Muon on every matrix and conv kernel (five Polar Express steps in bf16, same-shape matrices as one stack); AdamW on the action embedding, biases and norms; warmup, constant, then linear decay over the last 20% of steps. 9k tokenizer steps, then 19k world-model steps.
+- **Kernels.** At width 256 the step is bound by memory traffic. Two Pallas kernels read the activations in place: attention over a frame's tokens or causally over the frames, and a gated residual add fused with the next modulated RMS norm. They make a world-model step 2x faster than plain XLA.
+- **Sampling.** Spatial attention stays within a frame and temporal attention is causal, so the past frames' keys and values are computed once per new frame and each Euler step runs only the new frame. The browser player does the same: about 7 GFLOP per action on WebGPU.
+
+**Tried and dropped.** Iteration 3 is the short version of a longer recipe. These parts cost code or time and did not move the score over three seeds, so they went: the tokenizer seeing the frame before, training on the model's own generated past, a loss on how latents change from frame to frame, NorMuon's per-neuron step sizes, a separate optimizer for the heads, oversampling the hardest windows, and most of the custom kernels. The time they took now goes to more world-model steps. 534 lines instead of 1113, the same score.
 
 ## Dataset
 
-[`train.npz`][HF_DATASET] holds 500k transitions (250 streams of 2000 steps) of 63×63 frames, actions, rewards and episode ends.
-A world model learns the habits of the agents that made its data as if they were rules of the game: earlier models made a sword when asked for an iron pickaxe because the sword always came first, and made iron tools whenever the last action was place furnace.
+[`train.npz`][HF_DATASET] holds 500k transitions (250 streams of 2000 steps) of 63×63 frames, actions, rewards, episode ends, and the pieces that begin a real game.
+A world model learns the habits of the agents that made its data as if they were rules of the game: if the sword always comes first, it makes a sword when asked for an iron pickaxe; if iron tools always follow place furnace, it makes them whenever the last action was place furnace.
 So four RL agents play (a pixel PPO agent fine-tuned for diamonds drives most episodes), and a behaviour schedule makes their play more varied:
 
 - **Counterexamples to shortcuts:** iron pickaxes made with no sword, crafts at an old furnace, presses that fail (no table, no furnace, a missing ingredient, the wrong pickaxe), repeat placements.
-- **Deaths of every kind:** zombies, skeletons, lava, thirst, starvation and exhaustion.
-- **Return trips** for memory: walks out and back to places seen a few to a few hundred frames before, half of them led by a learned goal-conditioned walker.
-- **Diamonds:** at least 200, counting only the first one in an episode.
+- **Deaths of every kind:** 857 in all, by zombies, skeletons, lava, thirst, starvation and exhaustion, some as whole episodes.
+- **Diamonds:** 269 first diamonds, some as a whole game from the start to the diamond.
+- **Return trips** for memory: about every third step of free play the agent peeks a few tiles away and back, or walks a loop of 4 to 63 tiles, so places leave the view and come back.
 
-Pieces are cut only at quiet moments, never on a reward or an inventory change, and chosen so that events, not frames, are balanced. The code is in [collect/](collect/).
+Pieces are cut only at quiet moments, never on a reward or an inventory change, and chosen so that events, not frames, are balanced; the cells that come back into view count as events too. The code is in [collect/](collect/).
+
+<p align="center">
+  <img src="docs/assets/border_cells.png" alt="Cells entering the view at its edge, by frames since they were last on screen, in the old data and in this data, and how often iteration 3 draws a returning cell differently than before" width="760">
+</p>
+
+<p align="center"><sub>Top two: the cells that enter the view at its edge, by how many frames ago they were last on screen. In this data 3x more of them come back within 32 frames, so memory can be learned and measured.
+Bottom: iteration 3 draws a cell that comes back after a few frames mostly as before, and one that comes back after 16+ frames no better than chance.</sub></p>
 
 ## Evaluation
 
@@ -162,7 +170,6 @@ Ground truth left, world model right, same actions.</sub></p>
 [Dreamer 4](https://arxiv.org/abs/2509.24527) ·
 [Shortcut Models](https://arxiv.org/abs/2410.12557) ·
 [Muon](https://kellerjordan.github.io/posts/muon/) ·
-[NorMuon](https://arxiv.org/abs/2510.05491) ·
 [FVD](https://arxiv.org/abs/1812.01717)
 
 MIT license. Game sprites in the browser player are from Craftax (MIT).
