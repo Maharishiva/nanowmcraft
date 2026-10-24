@@ -42,8 +42,9 @@ gray map tint.
            itself, replayed from the same states with fresh randomness (mobs, saplings, night). Reward and done parts:
            the AP's gain over its base rate, (AP - base) / (1 - base). score_geometric, the weighted geometric mean of
            the same parts (each at least 1e-3), is reported for comparison and not ranked.
-  gates    reward AP at least REWARD_AP_FLOOR (95% of iteration 1's), done AP at least DONE_AP_FLOOR. A run below
-           either, or over the time budget, is not eligible; its score is reported as it is.
+  gates    judged on the three-seed means (program.md): reward AP at least REWARD_AP_FLOOR (95% of iteration 1's),
+           done AP at least DONE_AP_FLOOR. Each row's gates and eligible (both floors and the time budget met) only
+           inform about that one run; the score is never changed by them.
 
 The model is any module (default train.py) with this interface; how it generates a frame is its own business, and
 so is how much of the past it keeps:
@@ -126,11 +127,12 @@ def frechet(fr, fg):
 
 
 def average_precision(scores, labels):
-    """Area under the precision-recall curve: the mean precision at the rank of each positive; None without one."""
+    """Area under the precision-recall curve: the mean precision at the rank of each positive; None without one.
+    Tied scores rank negatives first, so a constant score gets at most the base rate."""
     hits = np.asarray(labels).ravel() > 0.5
     if not hits.any():
         return None
-    hits = hits[np.argsort(-np.asarray(scores, np.float64).ravel(), kind="stable")]
+    hits = hits[np.lexsort((hits, -np.asarray(scores, np.float64).ravel()))]
     return float(np.mean(np.cumsum(hits)[hits] / (np.flatnonzero(hits) + 1)))
 
 

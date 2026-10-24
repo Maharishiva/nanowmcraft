@@ -17,7 +17,7 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
   - score: the new mean minus the best mean must exceed `1.65 * sqrt((sd_best^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. Stable recipes need a smaller margin.
   - reward AP: the new three-seed mean stays at or above a fixed floor, 95% of iteration 1's mean (`train_tiny.py`). The floor does not move when the best changes.
   - done AP: the new three-seed mean stays at or above a fixed floor of 0.15.
-  - `eval.py` marks each run: `gates` and `eligible` (both gates passed, in budget). A run that fails is not eligible; its score is still reported.
+  - Each `eval.py` row also flags its own run against the floors (`gates`, `eligible`). That is for information only: the gates are judged on the three-seed means, and the score is never changed.
 
 | reward_ap | done_ap |
 |---:|---:|

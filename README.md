@@ -105,7 +105,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # abo
 - **Compute:** at most 600 s per training run on one A100 40GB, everything included, with no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical and its timed part (`eval_s`: importing and loading your model, compiling, generating) takes at most 300 s on the same GPU. Any model, any sampler and any context length, as long as it generates one frame per action without seeing future actions.
 - **Seeds:** report training seeds 0, 1 and 2.
-- **Gates:** the mean score beats the best by a noise-aware margin; reward AP stays above a fixed floor, 95% of iteration 1; done AP stays at or above 0.15. Ranked on the score alone, measured on a private test set built the same way from other worlds.
+- **Gates:** the mean score beats the best by a noise-aware margin; the three-seed means of reward AP and done AP stay at or above fixed floors (95% of iteration 1, and 0.15). Ranked on the score alone, measured on a private test set built the same way from other worlds.
 
 Details, the model interface and how to submit: [program.md](program.md).
 
