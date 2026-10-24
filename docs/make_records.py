@@ -25,8 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RECORDS, README, INDEX = ROOT / "docs" / "records.jsonl", ROOT / "README.md", ROOT / "docs" / "index.html"
 PROGRAM, BENCH = ROOT / "program.md", ROOT / "docs" / "benchmark.html"
-MEANS = ("score", "gFVD", "AF", "logic", "memory", "reward_ap", "done_ap")       # AF only while eval.py reports it
-SEED_KEYS = ("score", "gFVD", "gFVD_16", "AF", "logic", "memory", "reward_ap", "done_ap", "train_s", "eval_s")
+MEANS = ("score", "gFVD", "logic", "memory", "reward_ap", "done_ap")
+SEED_KEYS = ("score", "gFVD", "gFVD_16", "logic", "memory", "reward_ap", "done_ap", "train_s", "eval_s")
 TRAIN_BUDGET_S, EVAL_BUDGET_S, FLOOR = 600, 300, 0.95
 CROWN = '<img class="crown" src="icons/crown.png" alt="crown" onerror="this.remove()">'
 
@@ -93,7 +93,7 @@ def fmt(r, col):
     if name in ("code", "checkpoints"):
         url = r.get(name) or ""
         return f"[{url.rstrip('/').split('/')[-2 if name == 'code' else -1]}]({url})" if url else "–"
-    key, d = {"gFVD": ("gFVD", 1), "AF": ("AF", 3), "logic": ("logic", 2), "memory": ("memory", 3),
+    key, d = {"gFVD": ("gFVD", 1), "logic": ("logic", 2), "memory": ("memory", 3),
               "reward AP": ("reward_ap", 3), "done AP": ("done_ap", 3), "train s": ("train_s", 0)}[name]
     return f(key, d)
 
