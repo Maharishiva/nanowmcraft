@@ -77,7 +77,7 @@ CLIP, FEAT_SEED = 4, 1234
 GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 300
 GFVD_ZERO, GFVD_ONE = 170.0, 14.0                  # measured on data/eval.npz (copy, replayed game)
 WEIGHTS = {"gfvd": 0.25, "logic": 0.25, "memory": 0.25, "reward": 0.125, "done": 0.125}
-REWARD_AP_FLOOR, DONE_AP_FLOOR = 0.877, 0.15
+REWARD_AP_FLOOR, DONE_AP_FLOOR = 0.881, 0.15
 GAPS = (4, 8, 16, 32, 64, 10 ** 4)
 GROUPS = ("play", "logic", "memory", "long")
 
