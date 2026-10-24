@@ -106,7 +106,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <thead><tr><th class="n">#</th><th>author</th><th>change</th><th class="n">score ↑</th><th class="n">gFVD ↓</th><th class="n">logic ↑</th><th class="n">memory ↑</th><th class="n">reward<br>AP ↑</th><th class="n">train s</th><th>code</th><th>weights</th></tr></thead>
 <tbody><tr><td colspan="10">loading records.jsonl…</td></tr></tbody>
 </table></div>
-<p class="note">Best first. Score: 0 for a trivial model, 1 for the real game. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100 on the v3 data and scored by eval.py; gFVD shown ×10⁴. Train s is the slowest seed. Data: <a href="records.jsonl">records.jsonl</a>; the benchmark v2 table (old data, ranked on gFVD): <a href="records_v2.jsonl">records_v2.jsonl</a>.</p>
+<p class="note">Best first. Score: 0 for a trivial model, 1 for the real game. Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100 and scored by eval.py; gFVD shown ×10⁴. Train s is the slowest seed. Data: <a href="records.jsonl">records.jsonl</a>.</p>
 
 <h2 id="beat">beat it</h2>
 <p>Beat the best and yours is the next iteration: the crown goes next to your GitHub login, and the player on the <a href="./#play">home page</a> switches to your model. Hand it to your coding agent:</p>
@@ -121,14 +121,14 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <dl class="rules">
 <dt>data</dt><dd><a data-dataset href="#"><code>train.npz</code></a> on Hugging Face, 500k transitions. Nothing else, no pretrained weights.</dd>
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
-<dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating every clip must take at most 300 s on the maintainer's Colab A100 (iteration 3: about 170 s). Any model, any sampler, any context length.</dd>
+<dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating every clip must take at most 300 s on the maintainer's Colab A100 (iteration 3: about {EVAL_S_IT3} s). Any model, any sampler, any context length.</dd>
 <dt>frames</dt><dd>One frame per action: the model never sees future actions or frames.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
 <dt>gates</dt><dd>Ranked on the score alone, checked in the maintainer's rerun on the same machine and seeds, on a private test set built the same way from other worlds.</dd>
 </dl>
 <p>The score must beat the best mean by a noise-aware margin, where sd is the sample SD over the three seeds:</p>
 <p class="formula">new − best &gt; 1.65 · √((sd_best² + sd_new²) / 3)</p>
-<p>Reward AP must stay at or above a fixed floor, 95% of iteration 1: <b>reward AP ≥ 0.877</b>. The floor does not move when the best changes. Done AP is reported, not gated.</p>
+<p>Reward AP must stay at or above a fixed floor, 95% of iteration 1: <b>reward AP ≥ {REWARD_AP_FLOOR}</b>. The floor does not move when the best changes. Done AP is reported, not gated.</p>
 
 <h2 id="eval">evaluation</h2>
 <p>The frozen evaluator scores clips of held-out play from other worlds. Eight real frames prime the model, then it generates one frame per recorded action. Probes read the generated frames with the game's own textures: HUD digits, map cells, the sleep tint. The eval takes about 3 minutes on one A100.</p>

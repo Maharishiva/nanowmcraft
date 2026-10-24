@@ -2,7 +2,7 @@
 
 How to beat tinywmcraft, for people and for coding agents.
 
-The goal: a higher score than the best so far (iteration 3, 0.602 ± 0.005) from one 10-minute A100 run, without making the reward head worse.
+The goal: a higher score than the best so far (iteration 3, {SCORE_IT3} ± {SD_IT3}) from one 10-minute A100 run, without making the reward head worse.
 The score is the mean of three parts, each 0 for a trivial model and 1 for the real game: gFVD, game logic and memory ([README](README.md#evaluation)).
 Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
 
@@ -10,7 +10,7 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 
 - **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
 - **Training.** At most 600 s per run on one A100 40GB: data loading, tokenizer, compilation, everything. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint.
-- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 300 s on the same GPU; iteration 3 takes about 170 s. Anything else about generation is yours: the model family, the sampler, the number of steps, how much of the past the model keeps.
+- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 300 s on the same GPU; iteration 3 takes about {EVAL_S_IT3} s. Anything else about generation is yours: the model family, the sampler, the number of steps, how much of the past the model keeps.
 - **One frame per action.** The model generates frame by frame and never sees future actions or frames. The interface below hands it one action at a time; reading the eval data, caching frames across calls or other tricks around it are against the rules and checked in review.
 - **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
 - **Gates.** Measured in the maintainer's rerun, on the same machine and seeds, on a private test set: clips built by `make_eval.py` in the same way from worlds that are not in `eval.npz`. Ranked on the score alone:
@@ -20,7 +20,7 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 
 | reward_ap |
 |---:|
-| 0.877 |
+| {REWARD_AP_FLOOR} |
 
 One run is noisy: compare three-seed means, never single runs.
 
