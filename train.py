@@ -1,560 +1,349 @@
-"""Tokenizer + flow-matching world model for 63x63 pixel environments (Craftax-Classic), with reward and termination
-heads; Pallas kernels on GPU; ten minutes on one A100, compilation included, with no persistent compilation cache.
-
-The hybrid tile tokenizer and the diffusion-forcing transformer, plus:
-- temporal codec: the encoder sees each frame together with the one before it (dropped a quarter of the time);
-- shortcut bootstrap: told the step size, one Euler step learns to land where two half steps of the model land;
-- resampled history: in the second half of training, every eighth batch has two context frames per window replaced
-  by the model's own predictions;
-- temporal loss: the predicted change between consecutive frames is matched to the real one;
-- head gradients: the reward and termination heads have their own optimizer state and gradient clipping, and their
-  gradient into the trunk is scaled by 0.1 after the first half of training;
-- NorMuon with Polar Express orthogonalization on the kernels, AdamW on the rest.
-Sampling runs the window's past once per frame and each Euler step on the new frame alone.
-
-If the data has a `truncated` array, an episode ends at dones OR truncated (windows, masks, episode-start sampling) and
-the termination head learns real deaths only (dones AND NOT truncated), with no done loss on a truncated transition.
-Without it training is unchanged.
+"""train.py: iteration 3 of the tinywmcraft world model. A tokenizer maps 63x63 Craftax frames to 4x4x32 latents: each
+7x7 tile is a token, transformer blocks mix the 9x9 tiles, a stride-2 conv and residual convs reach 4x4. A transformer
+with spatial attention in frames, causal attention across them and adaLN-zero on the action and each frame's noise
+level (diffusion forcing) predicts the next latent by flow matching, with reward and episode-end heads. Also: the
+tokenizer learns from masked and noised frames too; a shortcut loss (told the step size, one Euler step learns to land
+where two half steps land); the heads' gradient into the trunk is cut to a tenth in the second half; half the windows
+start a game; Muon; Pallas kernels (kernels.py). Trains in ten minutes on one A100.
 
     python train.py --data data/train.npz --out runs/base/model.npz --seed 0
 """
-import argparse, hashlib, json, os, time
-from collections import namedtuple
-from dataclasses import dataclass, asdict, fields
+import argparse
+import json
+import os
+import time
+from dataclasses import asdict, dataclass, fields
 from functools import partial
 from pathlib import Path
-os.environ.setdefault("XLA_FLAGS", "--xla_gpu_enable_triton_gemm=false")
+
+os.environ.setdefault("XLA_FLAGS", "--xla_gpu_enable_triton_gemm=false")  # cuBLAS matmuls compile much faster
 import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+from flax import nnx
+
+import kernels
+
 jax.config.update("jax_default_matmul_precision", "tensorfloat32")
-import jax.numpy as jnp, numpy as np, optax, flax.nnx as nnx, kernels
 H = W = 63
-TILE, GRID, GLAT, TOK = 7, 9, 4, 32
-ENC_HID, DEC_HID, NB_HI, NB_LO = 128, 128, 6, 4
-D, DEPTH, HEADS, THEADS = 256, 6, 8, 8
-A_N, LMAX, WIN, STEPS, CTX_SIGNAL = 17, 40, 32, 8, 0.9
-RBINS, RLIM = 255, 20.0
-CDT, PDT = jnp.bfloat16, jnp.float32
-MP = dict(dtype=CDT, param_dtype=PDT)
-NRM = dict(dtype=PDT, param_dtype=PDT)
-ZEROS = jax.nn.initializers.zeros
+TILE, GRID, LAT, TOK = 7, 9, 4, 32  # 7x7 pixel tiles on a 9x9 grid; latents are 4x4 tokens of 32 channels
+CH, TBLOCKS, RBLOCKS = 128, 6, 4  # tokenizer width, transformer blocks at 9x9, residual blocks at 4x4
+D, DEPTH, HEADS, WIN = 256, 6, 8, 32  # transformer width, blocks, heads, frames per window
+ACTIONS, STEPS, CTX_SIGNAL, BUDGET = 17, 8, 0.9, 500_000
+RBINS, RLIM = 255, 20.0  # reward head: two-hot over symlog(reward) in [-RLIM, RLIM]
+Linear, Conv = partial(nnx.Linear, dtype=jnp.bfloat16), partial(nnx.Conv, dtype=jnp.bfloat16)
+Norm, zeros = partial(nnx.RMSNorm, dtype=jnp.float32), nnx.initializers.zeros
+
 @dataclass(frozen=True)
 class Config:
     seed: int = 0
-    tok_steps: int = 9_000
+    tok_steps: int = 9000
     tok_batch: int = 256
-    wm_steps: int = 16_000
+    wm_steps: int = 19000
     wm_batch: int = 64
-    rollout: int = WIN
     lr: float = 9e-4
-    tok_lr: float = 9e-4
-    decay: float = 0.2
-    hardmine: float = 0.5
-    startsamp: float = 0.5
-    reward_weight: float = 0.1
-    done_weight: float = 0.1
-    data_budget: int = 500_000
-    temporal_codec: int = 1
-    history_dropout: float = 0.25
-    shortcut_weight: float = 0.25
-    shortcut_every: int = 4
-    shortcut_warm: float = 0.25
-    resample_frames: int = 2
-    resample_every: int = 8
-    resample_warm: float = 0.5
-    resample_signal: float = 0.5
-    temporal_weight: float = 0.25
-    head_trunk: float = 0.1
-    head_warm: float = 0.5
-ModelState = namedtuple("ModelState", "enc dec df win", defaults=(WIN,))
-def _to01(u8): return u8.astype(jnp.float32) / 255.0
-def _tau_embed(tau, dim):
-    ang = tau[:, None] * jnp.exp(jnp.linspace(0.0, jnp.log(1000.0), dim // 2))[None, :]
-    return jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
-def _chain(blocks, h):
-    for b in blocks:
-        h = b(h)
-    return h
-def _symlog(x): return jnp.sign(x) * jnp.log1p(jnp.abs(x))
-def _symexp(x): return jnp.sign(x) * (jnp.exp(jnp.abs(x)) - 1.0)
-def _grad_scale(x, strength): return jax.lax.stop_gradient(x) + strength * (x - jax.lax.stop_gradient(x))
-def _two_hot(value):
-    pos = (jnp.clip(value, -RLIM, RLIM) + RLIM) / (2.0 * RLIM) * (RBINS - 1)
-    lo = jnp.clip(jnp.floor(pos).astype(jnp.int32), 0, RBINS - 2)
-    w = (pos - lo)[..., None]
-    return (1.0 - w) * jax.nn.one_hot(lo, RBINS) + w * jax.nn.one_hot(lo + 1, RBINS)
+
+def noised(z, tau, key): return tau * z + (1 - tau) * jax.random.normal(key, z.shape)
+
+def scaled_grad(x, s): return jax.lax.stop_gradient(x) + s * (x - jax.lax.stop_gradient(x))
+
 class ResBlock(nnx.Module):
-    def __init__(self, ch, rngs):
-        self.n1 = nnx.RMSNorm(ch, rngs=rngs, **NRM)
-        self.c1 = nnx.Conv(ch, ch, (3, 3), padding="SAME", rngs=rngs, **MP)
-        self.n2 = nnx.RMSNorm(ch, rngs=rngs, **NRM)
-        self.c2 = nnx.Conv(ch, ch, (3, 3), padding="SAME", rngs=rngs, **MP)
+    def __init__(self, rngs):
+        self.n1, self.c1 = Norm(CH, rngs=rngs), Conv(CH, CH, (3, 3), rngs=rngs)
+        self.n2, self.c2 = Norm(CH, rngs=rngs), Conv(CH, CH, (3, 3), rngs=rngs)
+
     def __call__(self, h):
         return h + self.c2(nnx.gelu(self.n2(self.c1(nnx.gelu(self.n1(h))))))
-class TBlock(nnx.Module):
-    def __init__(self, ch, rngs):
-        self.n1 = nnx.RMSNorm(ch, rngs=rngs, **NRM)
-        self.qkv = nnx.Linear(ch, 3 * ch, rngs=rngs, **MP)
-        self.o = nnx.Linear(ch, ch, rngs=rngs, **MP)
-        self.n2 = nnx.RMSNorm(ch, rngs=rngs, **NRM)
-        self.m1 = nnx.Linear(ch, 4 * ch, rngs=rngs, **MP)
-        self.m2 = nnx.Linear(4 * ch, ch, rngs=rngs, **MP)
-        self.pos = nnx.Param(0.02 * jax.random.normal(rngs.params(), (1, GRID, GRID, ch)))
-    def __call__(self, h):
-        B = h.shape[0]
-        h = h + self.pos.value.astype(h.dtype)
-        t = self.qkv(self.n1(h)).reshape((B, 1, GRID * GRID, -1))
-        h = h + self.o(kernels.attention(t, jnp.zeros((t.shape[-1] // 3,), t.dtype), THEADS, False)[:, 0].reshape(h.shape))
-        return h + self.m2(kernels.gelu(self.m1(self.n2(h))))
-def _tiles(x):
-    N = x.shape[0]
-    return x.reshape((N, GRID, TILE, GRID, TILE, 3)).transpose((0, 1, 3, 2, 4, 5)).reshape((N, GRID, GRID, TILE * TILE * 3))
-def _untile(t):
-    N = t.shape[0]
-    return t.reshape((N, GRID, GRID, TILE, TILE, 3)).transpose((0, 1, 3, 2, 4, 5)).reshape((N, H, W, 3))
-class TileOut(nnx.Module):
-    def __init__(self, features, rngs):
-        self.kernel = nnx.Param(jax.nn.initializers.lecun_normal()(rngs.params(), (TILE, TILE, features, 3), PDT))
-        self.bias = nnx.Param(jnp.zeros((3,), PDT))
-    def __call__(self, h):
-        w = self.kernel[...].astype(CDT).transpose((2, 0, 1, 3)).reshape((h.shape[-1], TILE * TILE * 3))
-        return h.astype(CDT) @ w + jnp.tile(self.bias[...].astype(CDT), TILE * TILE)
-class Encoder(nnx.Module):
-    def __init__(self, rngs, temporal=1):
-        self.temporal = bool(temporal)
-        self.stem = nnx.Linear((1 + self.temporal) * TILE * TILE * 3, 64, rngs=rngs, **MP)
-        self.proj = nnx.Conv(64, ENC_HID, (1, 1), rngs=rngs, **MP)
-        self.hi = nnx.List([TBlock(ENC_HID, rngs) for _ in range(NB_HI)])
-        self.down = nnx.Conv(ENC_HID, 128, (3, 3), strides=(2, 2), padding="VALID", rngs=rngs, **MP)
-        self.lo = nnx.List([ResBlock(128, rngs) for _ in range(NB_LO)])
-        self.out = nnx.Conv(128, TOK, (1, 1), rngs=rngs, **MP)
-    def __call__(self, x):
-        tiles = jnp.concatenate([_tiles(x[..., :3]), _tiles(x[..., 3:])], -1) if self.temporal else _tiles(x)
-        h = _chain(self.hi, self.proj(nnx.gelu(self.stem(tiles.astype(CDT)))))
-        return self.out(_chain(self.lo, nnx.gelu(self.down(h)))).astype(jnp.float32)
-class Decoder(nnx.Module):
+
+class TileBlock(nnx.Module):
+    """Pre-norm transformer block over the 9x9 tile tokens of a frame."""
     def __init__(self, rngs):
-        self.inp = nnx.Conv(TOK, 128, (1, 1), rngs=rngs, **MP)
-        self.lo = nnx.List([ResBlock(128, rngs) for _ in range(NB_LO)])
-        self.up = nnx.ConvTranspose(128, DEC_HID, (3, 3), strides=(2, 2), padding="VALID", rngs=rngs, **MP)
-        self.hi = nnx.List([TBlock(DEC_HID, rngs) for _ in range(NB_HI)])
-        self.out = TileOut(DEC_HID, rngs)
-    def __call__(self, z):
-        h = _chain(self.lo, nnx.gelu(self.inp(z.astype(CDT))))
-        return jax.nn.sigmoid(_untile(self.out(_chain(self.hi, nnx.gelu(self.up(h)))))).astype(jnp.float32)
-class Tok(nnx.Module):
-    def __init__(self, rngs, temporal=1):
-        self.enc, self.dec = Encoder(rngs, temporal), Decoder(rngs)
+        self.n1, self.qkv, self.o = Norm(CH, rngs=rngs), Linear(CH, 3 * CH, rngs=rngs), Linear(CH, CH, rngs=rngs)
+        self.n2 = Norm(CH, rngs=rngs)
+        self.mlp = nnx.Sequential(Linear(CH, 4 * CH, rngs=rngs), nnx.gelu, Linear(4 * CH, CH, rngs=rngs))
+        self.pos = nnx.Param(0.02 * jax.random.normal(rngs.params(), (GRID, GRID, CH)))
+
+    def __call__(self, h):
+        h = h + self.pos[...].astype(h.dtype)
+        qkv = self.qkv(self.n1(h)).reshape(-1, 1, GRID * GRID, 3 * CH)
+        h = h + self.o(kernels.attention(qkv, HEADS, False).reshape(h.shape))
+        return h + self.mlp(self.n2(h))
+
+class Tokenizer(nnx.Module):
+    """uint8 frames (..., 63, 63, 3) <-> standardized latents (..., 4, 4, TOK); the decoder mirrors the encoder and
+    maps each 9x9 token back to its tile."""
+    def __init__(self, rngs):
+        tiles, res = lambda: [TileBlock(rngs) for _ in range(TBLOCKS)], lambda: [ResBlock(rngs) for _ in range(RBLOCKS)]
+        down = Conv(CH, CH, (3, 3), strides=2, padding="VALID", rngs=rngs)
+        up = nnx.ConvTranspose(CH, CH, (3, 3), strides=2, padding="VALID", dtype=jnp.bfloat16, rngs=rngs)
+        self.enc = nnx.Sequential(Linear(3 * TILE**2, 64, rngs=rngs), nnx.gelu, Linear(64, CH, rngs=rngs), *tiles(),
+                                  down, nnx.gelu, *res(), Linear(CH, TOK, rngs=rngs))
+        self.dec = nnx.Sequential(Linear(TOK, CH, rngs=rngs), nnx.gelu, *res(), up, nnx.gelu, *tiles())
+        self.tile = nnx.Param(nnx.initializers.lecun_normal()(rngs.params(), (TILE, TILE, CH, 3)))  # a 7x7 conv
+        self.bias = nnx.Param(jnp.zeros(3))
+        self.mean, self.std = nnx.Variable(jnp.zeros(TOK)), nnx.Variable(jnp.ones(TOK))
+
+    def encode(self, frames):
+        x = frames.reshape(-1, GRID, TILE, GRID, TILE, 3).swapaxes(2, 3).reshape(-1, GRID, GRID, 3 * TILE**2)
+        z = (self.enc(x / 255.0).astype(jnp.float32) - self.mean[...]) / self.std[...]
+        return z.reshape(frames.shape[:-3] + z.shape[1:])
+
+    def decode(self, z):
+        h = self.dec((z * self.std[...] + self.mean[...]).reshape(-1, LAT, LAT, TOK))
+        x = h @ self.tile[...].astype(h.dtype).transpose(2, 0, 1, 3).reshape(CH, -1) + jnp.tile(self.bias[...], TILE**2)
+        x = jax.nn.sigmoid(x.astype(jnp.float32))
+        return x.reshape(-1, GRID, GRID, TILE, TILE, 3).swapaxes(2, 3).reshape(z.shape[:-3] + (H, W, 3))
+
+class Attention(nnx.Module):
+    """Attention over the tokens of each frame of x (B, L, N, D), or causally over its frames; also returns the keys
+    and values. Given those of a whole window as a cache, x is the one frame at slot n."""
+    def __init__(self, rngs):
+        self.qkv, self.out = Linear(D, 3 * D, rngs=rngs), Linear(D, D, rngs=rngs)
+
+    def __call__(self, x, temporal=False, cache=None, n=0):
+        qkv = self.qkv(x)
+        if cache is None:
+            return self.out(kernels.attention(qkv, HEADS, temporal)), qkv[..., D:]
+        kv = jax.lax.dynamic_update_slice_in_dim(cache, qkv[..., D:], n, axis=1)
+        q, (k, v) = qkv[:, 0, :, :D].reshape(x.shape[0], -1, HEADS, D // HEADS), jnp.split(
+            kv.reshape(kv.shape[:3] + (2 * HEADS, -1)), 2, axis=3)
+        s = jnp.einsum("bnhd,blnhd->bnhl", q, k, preferred_element_type=jnp.float32) * (D // HEADS) ** -0.5
+        p = jax.nn.softmax(jnp.where(jnp.arange(WIN) <= n, s, -1e30), -1).astype(v.dtype)
+        return self.out(jnp.einsum("bnhl,blnhd->bnhd", p, v).reshape(x.shape)), kv
+
 class Block(nnx.Module):
-    def __init__(self, rngs, d):
-        self.mod = nnx.Linear(d, 9 * d, kernel_init=ZEROS, bias_init=ZEROS, rngs=rngs, **MP)
-        self.sqkv = nnx.Linear(d, 3 * d, use_bias=False, rngs=rngs, **MP)
-        self.sq_bias = nnx.Param(jnp.zeros((d,), PDT))
-        self.so = nnx.Linear(d, d, rngs=rngs, **MP)
-        self.tqkv = nnx.Linear(d, 3 * d, use_bias=False, rngs=rngs, **MP)
-        self.tq_bias = nnx.Param(jnp.zeros((d,), PDT))
-        self.to = nnx.Linear(d, d, rngs=rngs, **MP)
-        self.m1 = nnx.Linear(d, 2 * d, rngs=rngs, **MP)
-        self.m2 = nnx.Linear(2 * d, d, rngs=rngs, **MP)
-    def __call__(self, h, cond, kv=None, slot=None, cache=False):
-        norm, gate, attend = kernels.norm_mod, kernels.gated_add, kernels.attention
-        ss, sh, sg, ts, th, tg, ms, mh, mg = jnp.split(self.mod(cond)[:, :, None, :], 9, axis=-1)
-        y = self.so(attend(self.sqkv(norm(h, ss, sh)), self.sq_bias[...], HEADS, False))
-        h, z = kernels.residual_norm(h, sg, y, ts, th)
-        qkv = self.tqkv(z)
-        attn = attend(qkv, self.tq_bias[...], HEADS, True) if kv is None else kernels.attention_one(qkv[:, 0], self.tq_bias[...], kv, slot, HEADS)[:, None]
-        y = self.to(attn)
-        h, z = kernels.residual_norm(h, tg, y, ms, mh)
-        h = gate(h, mg, self.m2(kernels.gelu(self.m1(z))))
-        return (h, qkv[..., h.shape[-1]:]) if cache else h
-class DF(nnx.Module):
-    def __init__(self, rngs, num_actions=A_N, max_length=LMAX):
-        self.zmean = nnx.Variable(jnp.zeros((TOK,), PDT))
-        self.zstd = nnx.Variable(jnp.ones((TOK,), PDT))
-        self.inp = nnx.Linear(TOK, D, rngs=rngs, **MP)
-        self.spos = nnx.Param(0.02 * jax.random.normal(rngs.params(), (1, 1, GLAT * GLAT, D)))
-        self.tpos = nnx.Param(0.02 * jax.random.normal(rngs.params(), (1, max_length, 1, D)))
-        self.aemb = nnx.Embed(num_actions, D, rngs=rngs, **MP)
-        self.taulin = nnx.Linear(D, D, rngs=rngs, **MP)
-        self.blocks = nnx.List([Block(rngs, D) for _ in range(DEPTH)])
-        self.outn = nnx.RMSNorm(D, use_scale=False, rngs=rngs, **NRM)
-        self.out = nnx.Linear(D, TOK, kernel_init=ZEROS, rngs=rngs, **MP)
-        self.rew1 = nnx.Linear(D, D, rngs=rngs, **MP)
-        self.rew2 = nnx.Linear(D, RBINS, kernel_init=ZEROS, bias_init=ZEROS, rngs=rngs, **MP)
-        self.done1 = nnx.Linear(2 * D, D, rngs=rngs, **MP)
-        self.done2 = nnx.Linear(D, 1, kernel_init=ZEROS, bias_init=ZEROS, rngs=rngs, **MP)
-        self.step_embed = nnx.Param(jnp.zeros((D,), PDT))
-    def __call__(self, x, tau, a):
-        return self.forward(x, tau, a)[0]
-    def action_embed(self, a):
-        return jnp.matmul(jax.nn.one_hot(a, self.aemb.num_embeddings, dtype=PDT), self.aemb.embedding[...], precision=jax.lax.Precision.HIGHEST).astype(CDT)
-    def reward_logits(self, summary):
-        return self.rew2(nnx.gelu(self.rew1(summary.astype(CDT)))).astype(jnp.float32)
-    def done_logits(self, summary, next_actions, head_scale=1.0):
-        action = self.action_embed(next_actions)
-        h = jnp.concatenate([summary.astype(CDT), _grad_scale(action, head_scale)], -1)
-        return self.done2(nnx.gelu(self.done1(h)))[..., 0].astype(jnp.float32)
-    def forward(self, x, tau, a, caches=None, slot=None, cache=False, delta=0.0):
-        B, L = x.shape[:2]
-        ae = self.action_embed(a)
-        h = self.inp(x.reshape((B, L, GLAT * GLAT, TOK)).astype(CDT))
-        pos = self.tpos.value[:, :L] if slot is None else self.tpos.value[:, slot][:, None]
-        h = h + self.spos.value.astype(h.dtype) + pos.astype(h.dtype) + ae[:, :, None, :]
-        cond = self.taulin(_tau_embed(tau.reshape((-1,)), D).astype(CDT)).reshape((B, L, D)) + ae + 8 * delta * self.step_embed[...].astype(CDT)
-        stored = []
-        for i, blk in enumerate(self.blocks):
-            if cache:
-                h, kv = blk(h, cond, cache=True)
-                stored.append(kv)
-            else: h = blk(h, cond, None if caches is None else caches[i], slot)
-        if cache: return tuple(stored)
-        h = self.outn(h)
-        return self.out(h).reshape((B, L, GLAT, GLAT, TOK)).astype(jnp.float32), h.mean(2)
-@nnx.jit
-def _encode(enc, zmean, zstd, obs_u8):
-    if enc.temporal:
-        past = jnp.take(obs_u8, jnp.maximum(jnp.arange(obs_u8.shape[-4]) - 1, 0), axis=-4) if obs_u8.ndim >= 5 else obs_u8
-        obs_u8 = jnp.concatenate([past, obs_u8], -1)
-    z = enc(_to01(obs_u8).reshape((-1, H, W, obs_u8.shape[-1])))
-    return ((z - zmean) / zstd).reshape(obs_u8.shape[:-3] + z.shape[-3:])
-@nnx.jit
-def _decode(dec, zmean, zstd, latent):
-    z = (latent * zstd + zmean).reshape((-1,) + latent.shape[-3:])
-    return jnp.clip(dec(z) * 255.0, 0, 255).astype(jnp.uint8).reshape(latent.shape[:-3] + (H, W, 3))
-def encode(model, obs_u8):
-    return _encode(model.enc, model.df.zmean.value, model.df.zstd.value, jnp.asarray(obs_u8))
-def decode(model, latent):
-    return _decode(model.dec, model.df.zmean.value, model.df.zstd.value, latent)
-def _flow_one(apply, seq, taus, aseq, s, rng, n_steps=STEPS):
-    B = seq.shape[0]
-    kc, kz = jax.random.split(rng)
-    t5 = taus[..., None, None, None]
-    seq = jnp.where(t5 > 0.5, t5 * seq + (1.0 - t5) * jax.random.normal(kc, seq.shape), seq)
-    dt = 1.0 / n_steps
-    caches = apply.forward(seq, taus, aseq, cache=True)
-    action = aseq[:, s][:, None]
-    def step(z, tau_s):
-        x1 = apply.forward(z[:, None], jnp.full((B, 1), tau_s), action, caches=caches, slot=s, delta=dt)[0][:, 0]
-        return z + dt * (x1 - z) / jnp.maximum(1.0 - tau_s, 1e-4), None
-    return jax.lax.scan(step, jax.random.normal(kz, (B,) + seq.shape[-3:]), jnp.arange(n_steps) * dt)[0]
-def _start_latents(ctx, ctx_a, win=WIN):
-    "Rollout state from context latents (B, n0, ...) and their incoming actions (B, n0): window, actions, next slot, real frames."
-    B, n0 = ctx.shape[:2]
-    seq = jnp.zeros((B, win) + ctx.shape[-3:]).at[:, :n0].set(ctx)
-    aseq = jnp.zeros((B, win), jnp.int32).at[:, :n0].set(ctx_a)
-    return seq, aseq, jnp.asarray(n0), jnp.asarray(n0)
-def _advance(apply, carry, action, key, steps=STEPS):
-    "One latent for the actions (B,); the window slides once full; real frames at signal 1.0, generated at CTX_SIGNAL."
-    seq, aseq, n, r = carry
-    B, win = seq.shape[:2]
-    slide = lambda sa: tuple(jnp.concatenate([v[:, 1:], v[:, -1:]], 1) for v in sa)
-    seq, aseq = jax.lax.cond(n == win, slide, lambda sa: sa, (seq, aseq))
-    r = jnp.where(n == win, jnp.maximum(r - 1, 0), r)
-    n = jnp.minimum(n, win - 1)
-    aseq = aseq.at[:, n].set(action)
-    taus = jnp.broadcast_to(jnp.where(jnp.arange(win) < n, jnp.where(jnp.arange(win) < r, 1.0, CTX_SIGNAL), 0.0), (B, win))
-    z = _flow_one(apply, seq, taus, aseq, n, key, steps)
-    return (seq.at[:, n].set(z), aseq, n + 1, r), z
-def _rollout_latents(apply, ctx, ctx_a, acts, rng, steps=STEPS, win=WIN):
-    step = lambda carry, inputs: _advance(apply, carry, *inputs, steps)
-    return jax.lax.scan(step, _start_latents(ctx, ctx_a, win), (acts, jax.random.split(rng, acts.shape[0])))[1]
-def _read_heads(df, latents, actions, key):
-    L = latents.shape[1]
-    latents, actions = jnp.pad(latents, ((0, 0), (0, WIN - L)) + ((0, 0),) * 3), jnp.pad(actions, ((0, 0), (0, WIN - L)))
-    x = CTX_SIGNAL * latents + (1.0 - CTX_SIGNAL) * jax.random.normal(key, latents.shape)
-    s = df.forward(x, jnp.full(latents.shape[:2], CTX_SIGNAL), actions)[1][:, :L]
-    rewards = _symexp(jnp.sum(jax.nn.softmax(df.reward_logits(s), -1) * jnp.linspace(-RLIM, RLIM, RBINS), -1))
-    p = jax.nn.sigmoid(df.done_logits(s[:, :-1], actions[:, 1:L]))
-    return rewards, jnp.concatenate([jnp.zeros_like(p[:, :1]), p], 1)
-def imagine(model, obs_u8, ctx_actions, actions, rng, steps=STEPS):
-    ctx = encode(model, jnp.asarray(obs_u8))
-    ca, fa = jnp.asarray(ctx_actions, jnp.int32), jnp.asarray(actions, jnp.int32)
-    gdef, state = nnx.split(model.df)
-    @jax.jit
-    def run(state, ctx, ca, fa, key):
-        kr, kz = jax.random.split(key)
-        df = nnx.merge(gdef, state)
-        zt = _rollout_latents(df, ctx, ca, fa.T, kr, steps, model.win)
-        heads = _read_heads(df, jnp.concatenate([ctx, zt.transpose(1, 0, 2, 3, 4)], 1), jnp.concatenate([ca, fa], 1), kz)
-        return zt, jax.tree.map(lambda v: v[:, ctx.shape[1]:], heads)
-    zt, (rewards, dones) = run(state, ctx, ca, fa, rng)
-    return decode(model, zt).transpose(1, 0, 2, 3, 4), rewards, dones
-def predict_heads(model, obs_u8, actions, rng):
-    gdef, state = nnx.split(model.df)
-    read = jax.jit(lambda state, z, a, key: _read_heads(nnx.merge(gdef, state), z, a, key))
-    return read(state, encode(model, jnp.asarray(obs_u8)), jnp.asarray(actions, jnp.int32), rng)
-_COMPILED = {}
-def _compiled(model):
-    "The jitted step and heads of a model, built once; its weights are arguments, not constants."
-    if id(model) not in _COMPILED:
-        gdf, sdf = nnx.split(model.df)
-        gdec, sdec = nnx.split(model.dec)
-        @jax.jit
-        def step(sdf, sdec, state, action, key):
-            df = nnx.merge(gdf, sdf)
-            state, z = _advance(df, state, action, key)
-            frame = nnx.merge(gdec, sdec)(z * df.zstd.value + df.zmean.value)
-            return jnp.clip(frame * 255.0, 0, 255).astype(jnp.uint8), state
-        heads = jax.jit(lambda sdf, z, a, key: _read_heads(nnx.merge(gdf, sdf), z, a, key))
-        _COMPILED[id(model)] = model, partial(step, sdf, sdec), partial(heads, sdf)
-    return _COMPILED[id(model)][1:]
-def start(model, obs_u8, actions):
-    """eval.py interface: real context frames (B, n0, H, W, 3) uint8 and the action into each (B, n0) -> rollout state.
-    All frames are encoded (the temporal codec pairs each with its predecessor), the window keeps the last win."""
-    ctx = encode(model, jnp.asarray(obs_u8))
-    return _start_latents(ctx[:, -model.win:], jnp.asarray(actions, jnp.int32)[:, -model.win:], model.win)
+    """adaLN-zero: spatial attention within each frame, causal attention across frames, MLP."""
+    def __init__(self, rngs):
+        self.mod = Linear(D, 9 * D, kernel_init=zeros, rngs=rngs)
+        self.space, self.time = Attention(rngs), Attention(rngs)
+        self.mlp = nnx.Sequential(Linear(D, 2 * D, rngs=rngs), nnx.gelu, Linear(2 * D, D, rngs=rngs))
+
+    def __call__(self, h, cond, cache=None, n=0):
+        s1, b1, g1, s2, b2, g2, s3, b3, g3 = jnp.split(self.mod(cond)[:, :, None], 9, axis=-1)
+        h, x = kernels.residual_norm(h, jnp.zeros_like(g1), h, s1, b1)  # the first norm, with nothing to add
+        h, x = kernels.residual_norm(h, g1, self.space(x)[0], s2, b2)
+        y, kv = self.time(x, True, cache, n)
+        h, x = kernels.residual_norm(h, g2, y, s3, b3)
+        return h + g3 * self.mlp(x), kv
+
+class WorldModel(nnx.Module):
+    """Clean latents (B, L, 4, 4, TOK) from latents noised to levels tau (B, L) under the action into each frame
+    (B, L), from window slot n on, told the Euler step size delta; also each frame's mean token and the temporal keys
+    and values of every block."""
+    def __init__(self, rngs):
+        self.inp, self.level = Linear(TOK, D, rngs=rngs), Linear(D, D, rngs=rngs)
+        self.spos = nnx.Param(0.02 * jax.random.normal(rngs.params(), (LAT * LAT, D)))
+        self.tpos = nnx.Param(0.02 * jax.random.normal(rngs.params(), (WIN, 1, D)))
+        self.act, self.step = nnx.Embed(ACTIONS, D, rngs=rngs), nnx.Param(jnp.zeros(D))
+        self.blocks = nnx.List([Block(rngs) for _ in range(DEPTH)])
+        self.out = Linear(D, TOK, kernel_init=zeros, rngs=rngs)
+        self.reward = nnx.Sequential(Linear(D, D, rngs=rngs), nnx.gelu, Linear(D, RBINS, kernel_init=zeros, rngs=rngs))
+        self.done = nnx.Sequential(Linear(2 * D, D, rngs=rngs), nnx.gelu, Linear(D, 1, kernel_init=zeros, rngs=rngs))
+
+    def embed(self, a):  # a one-hot matmul: the gather's gradient would be a slow scatter-add
+        return (jax.nn.one_hot(a, ACTIONS) @ self.act.embedding[...]).astype(jnp.bfloat16)
+
+    def __call__(self, x, tau, a, cache=None, n=0, delta=0.0):
+        B, L = a.shape
+        freqs = tau[..., None] * jnp.exp(jnp.linspace(0.0, jnp.log(1000.0), D // 2))
+        cond = self.level(jnp.concatenate([jnp.sin(freqs), jnp.cos(freqs)], -1)) + self.embed(a)
+        cond = (cond + STEPS * delta * self.step[...]).astype(jnp.bfloat16)
+        pos = jax.lax.dynamic_slice_in_dim(self.tpos[...], n, L) + self.spos[...]
+        h, kvs = self.inp(x.reshape(B, L, LAT * LAT, TOK)) + pos.astype(jnp.bfloat16) + self.embed(a)[:, :, None], []
+        for block, c in zip(self.blocks, cache or [None] * DEPTH):
+            h, kv = block(h, cond, c, n)
+            kvs.append(kv)
+        h = h * jax.lax.rsqrt(jnp.mean(jnp.square(h.astype(jnp.float32)), -1, keepdims=True) + 1e-6)
+        return self.out(h).reshape(x.shape).astype(jnp.float32), h.mean(2), kvs
+
+    def heads(self, s, a, grad=1.0):
+        """Reward logits from each frame's mean token s, episode-end logits of each next transition."""
+        done = self.done(jnp.concatenate([s[:, :-1], scaled_grad(self.embed(a[:, 1:]), grad)], -1))[..., 0]
+        return self.reward(s).astype(jnp.float32), done.astype(jnp.float32)
+
+class Model(nnx.Module):
+    def __init__(self, rngs):
+        self.tok, self.wm = Tokenizer(rngs), WorldModel(rngs)
+
+def sample(wm, z, a, n, real, key):
+    """The latent at slot n of the window z (B, WIN, ...): the past (the first `real` frames real and clean, the rest
+    generated, noised to CTX_SIGNAL) runs once to cache its keys and values, then STEPS Euler steps carry slot n
+    alone from noise to a clean latent."""
+    kc, kx = jax.random.split(key)
+    tau = jnp.broadcast_to(jnp.where(jnp.arange(WIN) < real, 1.0, CTX_SIGNAL), a.shape)
+    cache = wm(noised(z, tau[..., None, None, None], kc), tau, a)[2]
+    an = jax.lax.dynamic_slice_in_dim(a, n, 1, axis=1)
+
+    def euler(x, t):
+        x1 = wm(x[:, None], jnp.full(an.shape, t), an, cache, n, 1 / STEPS)[0][:, 0]
+        return x + (x1 - x) / (STEPS * (1 - t)), None
+    return jax.lax.scan(euler, jax.random.normal(kx, z[:, 0].shape), jnp.arange(STEPS) / STEPS)[0]
+
+@jax.jit
+def start(model, frames, actions):
+    """Real frames uint8 (B, n0, 63, 63, 3) and the action into each (B, n0) -> rollout state."""
+    n = min(frames.shape[1], WIN)
+    z = jnp.zeros((frames.shape[0], WIN, LAT, LAT, TOK)).at[:, :n].set(model.tok.encode(frames[:, -n:]))
+    return z, jnp.zeros(z.shape[:2], jnp.int32).at[:, :n].set(actions[:, -n:]), jnp.int32(n), jnp.int32(n)
+
+@jax.jit
 def step(model, state, action, key):
-    "The actions (B,) -> the next frames (B, H, W, 3) uint8 and the new state."
-    return _compiled(model)[0](state, jnp.asarray(action, jnp.int32), key)
-def heads(model, obs_u8, actions, key):
-    "Teacher-forced rewards (B, L) for arriving at each frame (L <= WIN) and the done probability (B, L) of the transition into it."
-    return _compiled(model)[1](encode(model, jnp.asarray(obs_u8)), jnp.asarray(actions, jnp.int32), key)
-_orthogonalize = kernels.polar_express
-def _muon(sched, weight_decay, beta=0.95, rms=0.2):
-    "NorMuon: normalize per-row/column variance while preserving each update's norm."
-    def init(params):
-        def variance(p):
-            r, c = p.size // p.shape[-1], p.shape[-1]
-            return jnp.zeros((r, 1) if r >= c else (1, c), PDT)
-        return jax.tree.map(jnp.zeros_like, params), jax.tree.map(variance, params), jnp.zeros((), jnp.int32)
-    def update(grads, state, params):
-        mu, nu, count = state
-        mu = jax.tree.map(lambda m, g: beta * m + g, mu, grads)
-        leaves, tdef = jax.tree.flatten(jax.tree.map(lambda m, g: g + beta * m, mu, grads))
-        flat = [l.reshape((-1, l.shape[-1])) for l in leaves]
-        groups = {shape: [i for i, l in enumerate(flat) if l.shape == shape] for shape in {l.shape for l in flat}}
-        out, moments = list(flat), jax.tree.leaves(nu)
-        for idx in groups.values():
-            orth = _orthogonalize(jnp.stack([flat[k] for k in idx]))
-            for j, i in enumerate(idx):
-                o = orth[j]
-                axis = -1 if o.shape[-2] >= o.shape[-1] else -2
-                v = 0.95 * moments[i] + 0.05 * jnp.mean(o * o, axis, keepdims=True)
-                scaled = o * jax.lax.rsqrt(v + 1e-10)
-                out[i] = scaled * jnp.sqrt(jnp.sum(o * o) / (jnp.sum(scaled * scaled) + 1e-10))
-                moments[i] = v
-        new = [-sched(count) * (rms * max(o.shape) ** 0.5 * o.reshape(p.shape) + weight_decay * p) for o, p in zip(out, jax.tree.leaves(params))]
-        return jax.tree.unflatten(tdef, new), (mu, jax.tree.unflatten(tdef, moments), count + 1)
-    return optax.GradientTransformation(init, update)
-def _optimizer(lr, steps, decay, warm, weight_decay, head_split=False):
-    if head_split: return optax.partition({k: _optimizer(lr, steps, decay, warm, weight_decay) for k in ("body", "heads")}, lambda params: jax.tree_util.tree_map_with_path(lambda p, x: "heads" if any(n in jax.tree_util.keystr(p) for n in ("rew1", "rew2", "done1", "done2")) else "body", params))
-    dec = int(steps * decay)
-    sched = optax.join_schedules([optax.linear_schedule(0.0, lr, warm), optax.constant_schedule(lr),
-                                  optax.linear_schedule(lr, 0.0, max(dec, 1))], [warm, steps - dec])
-    label = lambda p, x: "muon" if x.ndim in (2, 4) and "aemb" not in jax.tree_util.keystr(p) else "adam"
-    labels = lambda params: jax.tree_util.tree_map_with_path(label, params)
-    opts = {"muon": _muon(sched, weight_decay), "adam": optax.adamw(sched, weight_decay=weight_decay)}
-    return optax.chain(optax.clip_by_global_norm(1.0), optax.partition(opts, labels))
-def _train_tokenizer(tok, frames, cfg, envs=1):
-    warm = min(300, max(1, cfg.tok_steps // 10))
-    opt = nnx.Optimizer(tok, _optimizer(cfg.tok_lr, cfg.tok_steps, cfg.decay, warm, 0.0), wrt=nnx.Param)
-    n = cfg.tok_batch // 3
-    @nnx.jit
-    def run(tok, opt, frames, keys):
-        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(nnx.Carry, 0))
-        def loop(carry, key):
-            tok, opt = carry
-            kr, km, kn, ke = jax.random.split(key, 4)
-            ids = jax.random.randint(kr, (cfg.tok_batch,), 0, frames.shape[0])
-            x = _to01(frames[ids])
-            xc, xm, xd = x[:n], x[n:2 * n], x[2 * n:]
-            m = (jax.random.uniform(km, (n, GRID, GRID, 1)) > 0.5).astype(jnp.float32)
-            m = jnp.repeat(jnp.repeat(m, TILE, 1), TILE, 2)
-            sig = jax.random.uniform(kn, (xd.shape[0], 1, 1, 1)) * 0.2
-            inp = jnp.concatenate([xc, xm * m + 0.5 * (1 - m), jnp.clip(xd + sig * jax.random.normal(ke, xd.shape), 0, 1)], 0)
-            if tok.enc.temporal:
-                past = _to01(frames[jnp.where(ids >= envs, ids - envs, ids)])
-                absent = jax.random.bernoulli(jax.random.fold_in(km, 1), cfg.history_dropout, (cfg.tok_batch, 1, 1, 1))
-                inp = jnp.concatenate([jnp.where(absent, inp, past), inp], -1)
-            loss, grads = nnx.value_and_grad(lambda tok: jnp.mean((tok.dec(tok.enc(inp)) - x) ** 2))(tok)
-            opt.update(tok, grads)
-            return (tok, opt), loss
-        return loop((tok, opt), keys)[1]
-    return run(tok, opt, frames, jax.random.split(jax.random.PRNGKey(cfg.seed + 1), cfg.tok_steps))
-def _encode_all(enc, frames):
-    gdef, state = nnx.split(enc)
-    def one(t):
-        f = jnp.concatenate([frames[jnp.maximum(t - 1, 0)], frames[t]], -1) if enc.temporal else frames[t]
-        return nnx.merge(gdef, state)(_to01(f))
-    return jax.lax.map(one, jnp.arange(frames.shape[0]))
-def _layout(actions, dones, length):
-    T, E = actions.shape[0] + 1, actions.shape[1]
-    incoming = jnp.concatenate([jnp.zeros((1, E), jnp.int32), actions], 0)
-    resets = jnp.concatenate([jnp.ones((1, E), jnp.float32), dones], 0)
-    rt, re = np.nonzero(np.asarray(resets[:T - length + 1]) > 0.5)
-    return incoming, resets, jnp.asarray(rt), jnp.asarray(re)
-def _shortcut_loss(df, z, a, valid, key, history):
+    """The frame (B, 63, 63, 3) uint8 that follows the actions (B,); the window slides once full."""
+    z, a, n, real = state
+    z, a = (jnp.where(n == WIN, jnp.roll(v, -1, axis=1), v) for v in (z, a))
+    real = jnp.where(n == WIN, jnp.maximum(real - 1, 0), real)
+    n = jnp.minimum(n, WIN - 1)
+    a = a.at[:, n].set(action)
+    x = sample(model.wm, z, a, n, real, key)
+    return jnp.round(model.tok.decode(x) * 255).astype(jnp.uint8), (z.at[:, n].set(x), a, n + 1, real)
+
+@jax.jit
+def heads(model, frames, actions, key):
+    """Teacher-forced reward and episode-end probability (B, L) of the step into each frame (L <= WIN, padded to WIN
+    for the kernels)."""
+    L, pad = frames.shape[1], ((0, 0), (0, WIN - frames.shape[1]))
+    x, a = noised(jnp.pad(model.tok.encode(frames), pad + ((0, 0),) * 3), CTX_SIGNAL, key), jnp.pad(actions, pad)
+    reward, done = model.wm.heads(model.wm(x, jnp.full(a.shape, CTX_SIGNAL), a)[1][:, :L], a[:, :L])
+    reward = jax.nn.softmax(reward) @ jnp.linspace(-RLIM, RLIM, RBINS)
+    return jnp.sign(reward) * jnp.expm1(jnp.abs(reward)), jnp.pad(jax.nn.sigmoid(done), ((0, 0), (1, 0)))
+
+def tok_loss(tok, frames, key, step, batch):
+    """A third of the batch clean, a third with half the tiles grey, a third with Gaussian noise up to 0.2; clean
+    targets."""
+    ki, km, ks, kn = jax.random.split(key, 4)
+    x, n = frames[jax.random.randint(ki, (batch,), 0, frames.shape[0])] / 255.0, batch // 3
+    keep = jnp.repeat(jnp.repeat(jax.random.uniform(km, (n, GRID, GRID, 1)) > 0.5, TILE, 1), TILE, 2)
+    noise = 0.2 * jax.random.uniform(ks, (batch - 2 * n, 1, 1, 1)) * jax.random.normal(kn, x[2 * n:].shape)
+    inp = jnp.concatenate([x[:n], jnp.where(keep, x[n:2 * n], 0.5), jnp.clip(x[2 * n:] + noise, 0, 1)])
+    return jnp.mean((tok.decode(tok.encode(inp * 255.0)) - x) ** 2)
+
+def shortcut_loss(wm, z, a, valid, key):
+    """On 8 windows at a random slot after a past at CTX_SIGNAL: one Euler step told its size 1/STEPS learns to land
+    where two half steps of the plain model land."""
     z, a, valid = z[:8], a[:8], valid[:8]
-    B, L = z.shape[:2]
     ks, kt, kn = jax.random.split(key, 3)
-    slot = jax.random.randint(ks, (), 0, L)
-    tau = jax.random.randint(kt, (B, 1), 0, STEPS) / STEPS
-    eps = jax.random.normal(kn, z.shape)
-    levels = jnp.broadcast_to(jnp.where(jnp.arange(L) < slot, CTX_SIGNAL, 0.0), (B, L))
-    seq = CTX_SIGNAL * history[:8] + (1.0 - CTX_SIGNAL) * eps
-    caches = jax.tree.map(jax.lax.stop_gradient, df.forward(seq, levels, a, cache=True))
-    t5 = tau[..., None, None, None]
-    query = t5 * z[:, slot][:, None] + (1.0 - t5) * eps[:, slot][:, None]
-    action = a[:, slot][:, None]
-    fine = lambda x, t: jax.lax.stop_gradient(df.forward(x, t, action, caches=caches, slot=slot)[0])
-    v1 = (fine(query, tau) - query) / (1.0 - t5)
-    middle = query + v1 / (2 * STEPS)
-    v2 = (fine(middle, tau + 1 / (2 * STEPS)) - middle) / (1.0 - t5 - 1 / (2 * STEPS))
-    target = jax.lax.stop_gradient(query + (1.0 - t5) * (v1 + v2) / 2)
-    pred = df.forward(query, tau, action, caches=caches, slot=slot, delta=1 / STEPS)[0]
-    error = (0.1 + .9 * tau[:, 0]) * jnp.mean((pred - target) ** 2, (1, 2, 3, 4))
-    return jnp.sum(error * valid[:, slot]) / (jnp.sum(valid[:, slot]) + 1e-6)
-def _resample_context(df, z, a, key, cfg):
-    B, L = z.shape[:2]
-    ks, kn = jax.random.split(key)
-    start = jax.random.randint(ks, (B,), 0, L - cfg.resample_frames + 1)
-    slots, batch = jnp.arange(L)[None], jnp.arange(B)
-    def one(seq, item):
-        offset, key = item
-        kc, kt = jax.random.split(key)
-        slot = start + offset
-        tau = jnp.where(slots < slot[:, None], CTX_SIGNAL, 0.0)
-        xt = CTX_SIGNAL * seq + (1.0 - CTX_SIGNAL) * jax.random.normal(kc, seq.shape)
-        query = cfg.resample_signal * z[batch, slot] + (1.0 - cfg.resample_signal) * jax.random.normal(kt, z[:, 0].shape)
-        xt, tau = xt.at[batch, slot].set(query), tau.at[batch, slot].set(cfg.resample_signal)
-        return seq.at[batch, slot].set(df(xt, tau, a)[batch, slot]), None
-    result = jax.lax.scan(one, z, (jnp.arange(cfg.resample_frames), jax.random.split(kn, cfg.resample_frames)))[0]
-    return jax.lax.stop_gradient(result), (slots >= start[:, None]) & (slots < start[:, None] + cfg.resample_frames)
-def _train_wm(df, Z, A, Dd, R, cfg, Tr=None):
-    "Tr: optional truncation flags (T-1, E); a truncated transition is a window boundary but not a death."
-    warm = min(100, max(1, cfg.wm_steps // 10))
-    opt = nnx.Optimizer(df, _optimizer(cfg.lr, cfg.wm_steps, cfg.decay, warm, 0.01, True), wrt=nnx.Param)
-    T, E = Z.shape[:2]
-    L, B = cfg.rollout, cfg.wm_batch
-    if Tr is None:
-        A, Dd, rst_t, rst_e = _layout(A, Dd, L)
-    else:                                                  # Dd becomes the boundary (death or crop), Tr the crop flag per frame
-        A, Dd, rst_t, rst_e = _layout(A, jnp.maximum(Dd, Tr), L)
-        Tr = jnp.concatenate([jnp.zeros((1, E), jnp.float32), Tr], 0)
-    R = jnp.concatenate([jnp.zeros((1, E), jnp.float32), R], 0)
-    ltab, offz = jnp.full((T - L + 1, E), 10.0), jnp.arange(L)
-    @nnx.jit
-    def run(df, opt, ltab, Z, A, Dd, R, Tr, keys):
-        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(nnx.Carry, 0))
-        def loop(carry, item):
-            key, step = item
-            df, opt, ltab = carry
-            ke, kt, ktau, keps, kp, kq, krj, krm = jax.random.split(key, 8)
-            e = jax.random.randint(ke, (B,), 0, E)
-            t = jax.random.randint(kt, (B,), 0, T - L + 1)
-            cdf = jnp.cumsum(ltab.reshape(-1))
-            jf = jnp.minimum(jnp.searchsorted(cdf, jax.random.uniform(kp, (B,)) * cdf[-1], method="scan_unrolled"), cdf.shape[0] - 1)
-            hm = jax.random.bernoulli(kq, cfg.hardmine, (B,))
-            t, e = jnp.where(hm, jf // E, t), jnp.where(hm, jf % E, e)
-            jr = jax.random.randint(krj, (B,), 0, len(rst_t))
-            sm = jax.random.bernoulli(krm, cfg.startsamp, (B,))
-            t, e = jnp.where(sm, rst_t[jr], t), jnp.where(sm, rst_e[jr], e)
-            zi = t[:, None] + offz
-            ei = jnp.broadcast_to(e[:, None], zi.shape)
-            z, a, dwin, r = Z[zi, ei].astype(jnp.float32), A[zi, ei], Dd[zi, ei], R[zi, ei]
-            a = a.at[:, 0].set(jnp.where(dwin[:, 0] > 0.5, 0, a[:, 0]))
-            r = r.at[:, 0].set(jnp.where(dwin[:, 0] > 0.5, 0.0, r[:, 0]))
-            valid = jnp.cumprod(1.0 - dwin.at[:, 0].set(0.0), axis=1)
-            if Tr is None:
-                dtarget, dvalid = dwin[:, 1:], valid[:, :-1]
-            else:                                          # real deaths only; no done loss on a truncated transition
-                twin = Tr[zi, ei][:, 1:]
-                dtarget, dvalid = dwin[:, 1:] * (1.0 - twin), valid[:, :-1] * (1.0 - twin)
-            tau = jax.random.uniform(ktau, (B, L))
-            history = z
-            if cfg.resample_frames:
-                active = (step >= cfg.wm_steps * cfg.resample_warm) & (step % cfg.resample_every == 0)
-                history, mask = jax.lax.cond(active, lambda: _resample_context(df, z, a, jax.random.fold_in(keps, 1), cfg), lambda: (z, jnp.zeros((B, L), jnp.bool_)))
-                tau = jnp.where(mask, CTX_SIGNAL, tau)
-            t5 = tau[:, :, None, None, None]
-            x_tau = (1.0 - t5) * jax.random.normal(keps, z.shape) + t5 * history
-            def loss_fn(df):
-                delta = jax.random.bernoulli(jax.random.fold_in(key, 90), .5) / STEPS if cfg.shortcut_weight else 0.0
-                x1, s = df.forward(x_tau, tau, a, delta=delta)
-                ramp = 0.9 * tau + 0.1
-                err = ramp * jnp.mean((x1 - z) ** 2, axis=(2, 3, 4))
-                strength = jnp.where(step < cfg.wm_steps * cfg.head_warm, 1.0, cfg.head_trunk)
-                s = _grad_scale(s, strength)
-                ce = -jnp.sum(_two_hot(_symlog(r)) * jax.nn.log_softmax(df.reward_logits(s), -1), -1)
-                dl = optax.sigmoid_binary_cross_entropy(df.done_logits(s[:, :-1], a[:, 1:], head_scale=strength), dtarget)
-                loss = (jnp.sum(err * valid) + cfg.reward_weight * jnp.sum(ramp * ce * valid)) / (jnp.sum(valid) + 1e-6)
-                loss = loss + cfg.done_weight * jnp.sum(ramp[:, :-1] * dl * dvalid) / (jnp.sum(dvalid) + 1e-6)
-                if cfg.shortcut_weight:
-                    active = (step >= cfg.wm_steps * cfg.shortcut_warm) & (step % cfg.shortcut_every == 0)
-                    loss += cfg.shortcut_weight * jax.lax.cond(active, lambda: _shortcut_loss(df, z, a, valid, jax.random.fold_in(key, 91), history), lambda: jnp.array(0.0))
-                if cfg.temporal_weight:
-                    drift = (x1[:, 1:] - x1[:, :-1]) - (z[:, 1:] - z[:, :-1])
-                    motion = jnp.minimum(tau[:, 1:], tau[:, :-1]) * jnp.mean(drift ** 2, (2, 3, 4))
-                    loss += cfg.temporal_weight * jnp.sum(motion * valid[:, 1:]) / (jnp.sum(valid[:, 1:]) + 1e-6)
-                return loss, jnp.sum(err * valid, 1) / (jnp.sum(valid, 1) + 1e-6)
-            (loss, perwin), grads = nnx.value_and_grad(loss_fn, has_aux=True)(df)
-            opt.update(df, grads)
-            ltab = ltab.at[t, e].set(0.5 * ltab[t, e] + 0.5 * perwin, unique_indices=False)
-            return (df, opt, ltab), loss
-        return loop((df, opt, ltab), (keys, jnp.arange(len(keys))))[1]
-    return run(df, opt, ltab, Z, A, Dd, R, Tr, jax.random.split(jax.random.PRNGKey(cfg.seed + 2), cfg.wm_steps))
-def train(data_npz, out, cfg):
-    t0 = time.time()
-    data = np.load(data_npz)
-    num_actions = json.loads(str(data["meta"])).get("num_actions", A_N)
-    A, Dd, R = jnp.asarray(data["actions"], jnp.int32), jnp.asarray(data["dones"], jnp.float32), jnp.asarray(data["rewards"], jnp.float32)
-    Tr = jnp.asarray(data["truncated"], jnp.float32) if "truncated" in data.files else None
-    if Tr is not None:
-        print(f"[data] {int(Tr.sum())} truncations (boundaries, not deaths), {int((Dd * (1 - Tr)).sum())} deaths", flush=True)
-    if A.size > cfg.data_budget:
-        raise ValueError(f"the training data budget is {cfg.data_budget} transitions")
+    n, tau = jax.random.randint(ks, (), 0, WIN), jax.random.randint(kt, (8, 1), 0, STEPS) / STEPS
+    eps, t5, h = jax.random.normal(kn, z.shape), tau[..., None, None, None], 1 / (2 * STEPS)
+    cache = jax.lax.stop_gradient(wm(CTX_SIGNAL * z + (1 - CTX_SIGNAL) * eps, jnp.full(a.shape, CTX_SIGNAL), a)[2])
+    x, an = t5 * z[:, n][:, None] + (1 - t5) * eps[:, n][:, None], a[:, n][:, None]
+    flow = lambda x, t: (jax.lax.stop_gradient(wm(x, t, an, cache, n)[0]) - x) / (1 - t[..., None, None, None])
+    v1 = flow(x, tau)
+    target = x + (1 - t5) * (v1 + flow(x + h * v1, tau + h)) / 2
+    err = (0.1 + 0.9 * tau[:, 0]) * jnp.mean((wm(x, tau, an, cache, n, 1 / STEPS)[0] - target) ** 2, (1, 2, 3, 4))
+    return jnp.sum(err * valid[:, n]) / (jnp.sum(valid[:, n]) + 1e-6)
+
+def wm_loss(wm, data, key, step, batch, steps):
+    """Flow matching on windows at independent per-frame signal levels, weighted up with the signal, plus the heads on
+    the same pass; half the windows start a game; frames after an episode end are masked out; a truncation is no
+    death. Every 4th step after the first quarter adds the shortcut loss; the heads' gradient into the trunk is cut
+    to a tenth in the second half."""
+    Z, A, R, Dn, Tr, starts = data
+    kt, ks, kn, kd, kp, kq, kc = jax.random.split(key, 7)
+    rand = jax.random.randint(kt, (batch, 2), 0, jnp.array([Z.shape[0] - WIN + 1, Z.shape[1]]))
+    first = starts[jax.random.randint(kp, (batch,), 0, len(starts))]
+    t, e = jnp.where(jax.random.bernoulli(kq, 0.5, (batch, 1)), first, rand).T
+    i = t[:, None] + jnp.arange(WIN)
+    z, a, r, d, tr = Z[i, e[:, None]], A[i, e[:, None]], R[i, e[:, None]], Dn[i, e[:, None]], Tr[i, e[:, None]]
+    a, r = (v.at[:, 0].set(jnp.where(d[:, 0] > 0, 0, v[:, 0])) for v in (a, r))
+    valid = jnp.cumprod(1 - d.at[:, 0].set(0), axis=1)
+    tau = jax.random.uniform(ks, (batch, WIN))
+    pred, s, _ = wm(noised(z, tau[..., None, None, None], kn), tau, a, delta=jax.random.bernoulli(kd) / STEPS)
+    grad = jnp.where(step < steps // 2, 1.0, 0.1)
+    reward, done = wm.heads(scaled_grad(s, grad), a, grad)
+    pos = (jnp.clip(jnp.sign(r) * jnp.log1p(jnp.abs(r)), -RLIM, RLIM) + RLIM) / (2 * RLIM) * (RBINS - 1)
+    lo = jnp.clip(jnp.floor(pos).astype(jnp.int32), 0, RBINS - 2)
+    hot = lambda i, w: w[..., None] * jax.nn.one_hot(i, RBINS)
+    two_hot = hot(lo, lo + 1 - pos) + hot(lo + 1, pos - lo)
+    rew = -jnp.sum(jax.nn.log_softmax(reward) * two_hot, -1)
+    flow = jnp.mean((pred - z) ** 2, axis=(2, 3, 4))
+    end = optax.sigmoid_binary_cross_entropy(done, d[:, 1:] * (1 - tr[:, 1:]))
+    w = valid * (0.9 * tau + 0.1)
+    loss = (jnp.sum(w * (flow + 0.1 * rew)) + 0.1 * jnp.sum(w[:, :-1] * (1 - tr[:, 1:]) * end)) / valid.sum()
+    shortcut = lambda: shortcut_loss(wm, z, a, valid, kc)
+    return loss + 0.25 * jax.lax.cond((step >= steps // 4) & (step % 4 == 0), shortcut, lambda: jnp.zeros(()))
+
+def polar(g):
+    """Five Polar Express steps in bf16: the nearest semi-orthogonal matrix of each of a stack (n, rows, columns)."""
+    x = (g / (1.02 * jnp.linalg.norm(g, axis=(-2, -1), keepdims=True) + 1e-7)).astype(jnp.bfloat16)
+    x = x.mT if x.shape[-2] > x.shape[-1] else x
+    for a, b, c in ((8.15655, -22.48329, 15.87877), (4.04293, -2.80892, 0.500018), (3.89167, -2.77248, 0.506065),
+                    (3.28575, -2.36813, 0.464490), (2.34654, -1.70978, 0.423236)):
+        aa = x @ x.mT
+        x = a * x + (b * aa + c * aa @ aa) @ x
+    return (x.mT if g.shape[-2] > g.shape[-1] else x).astype(jnp.float32)
+
+def muon(lr, wd, beta=0.95):
+    """Muon: Nesterov momentum, orthogonalized (conv kernels flattened, same-shape matrices as one stack), RMS 0.2."""
+    def update(grads, state, params):
+        mu, count = jax.tree.map(lambda m, g: beta * m + g, state[0], grads), state[1]
+        flat, tdef = jax.tree.flatten(jax.tree.map(lambda m, g: (g + beta * m).reshape(-1, g.shape[-1]), mu, grads))
+        out = list(flat)
+        for shape in {f.shape for f in flat}:
+            idx = [i for i, f in enumerate(flat) if f.shape == shape]
+            for i, o in zip(idx, polar(jnp.stack([flat[i] for i in idx]))):
+                out[i] = 0.2 * max(shape) ** 0.5 * o
+        new = [-lr(count) * (o.reshape(p.shape) + wd * p) for o, p in zip(out, jax.tree.leaves(params))]
+        return jax.tree.unflatten(tdef, new), (mu, count + 1)
+    return optax.GradientTransformation(lambda p: (jax.tree.map(jnp.zeros_like, p), jnp.zeros((), jnp.int32)), update)
+
+def optimizer(steps, warm, lr, wd):
+    """Muon on the matrices, AdamW on the action embedding, biases and norms; warmup, then linear decay over the last
+    fifth."""
+    sched = optax.join_schedules([optax.linear_schedule(0.0, lr, warm), optax.constant_schedule(lr),
+                                  optax.linear_schedule(lr, 0.0, steps // 5)], [warm, steps - steps // 5])
+    label = lambda path, p: "muon" if p.ndim > 1 and "act" not in str(path) else "adam"
+    return optax.chain(optax.clip_by_global_norm(1.0), optax.partition(
+        {"muon": muon(sched, wd), "adam": optax.adamw(sched, weight_decay=wd)},
+        lambda params: jax.tree_util.tree_map_with_path(label, params)))
+
+def fit(model, loss_fn, data, steps, cfg, opt):
+    """All optimizer steps on loss_fn(model, data, key, step) as one compiled scan; returns the losses."""
+    @nnx.scan(in_axes=(nnx.Carry, None, 0, 0), out_axes=(nnx.Carry, 0))
+    def one(carry, data, key, i):
+        model, opt = carry
+        loss, grads = nnx.value_and_grad(lambda m: loss_fn(m, data, key, i))(model)
+        opt.update(model, grads)
+        return (model, opt), loss
+    keys = jax.random.split(jax.random.key(cfg.seed), steps)
+    return nnx.jit(one)((model, nnx.Optimizer(model, opt, wrt=nnx.Param)), data, keys, jnp.arange(steps))[1]
+
+def train(data_path, out, cfg):
+    t0, data = time.time(), np.load(data_path)
+    assert data["actions"].size <= BUDGET, f"the data budget is {BUDGET} transitions"
     frames = jnp.asarray(data["frames"])
-    with open(data_npz, "rb") as fh:
-        data_sha = hashlib.file_digest(fh, "sha256").hexdigest()
-    print(f"[data] frames {frames.shape} in {time.time()-t0:.1f}s", flush=True)
-    tok = Tok(nnx.Rngs(cfg.seed), cfg.temporal_codec)
-    t1 = time.time()
-    tl = _train_tokenizer(tok, frames.reshape((-1, H, W, 3)), cfg, frames.shape[1])
-    tl.block_until_ready()
-    print(f"[tok] {cfg.tok_steps} steps {time.time()-t1:.1f}s  loss {float(tl[0]):.4f}->{float(tl[-1]):.5f}", flush=True)
-    df = DF(nnx.Rngs(cfg.seed + 100), num_actions, max(LMAX, cfg.rollout))
-    t2 = time.time()
-    Z = _encode_all(tok.enc, frames)
-    flat = Z.reshape((-1, Z.shape[-1]))
-    df.zmean[...], df.zstd[...] = flat.mean(0), flat.std(0)
-    Z = (Z - df.zmean.value) / df.zstd.value
-    print(f"[cache] latents {Z.shape} {time.time()-t2:.1f}s  raw std {float(flat.std()):.3f}", flush=True)
-    del frames, flat
-    t3 = time.time()
-    wl = _train_wm(df, Z, A, Dd, R, cfg, Tr)
-    wl.block_until_ready()
-    q = [0, len(wl) // 4, len(wl) // 2, 3 * len(wl) // 4, -1]
-    print(f"[wm] {cfg.wm_steps} steps {time.time()-t3:.1f}s  loss " + "  ".join(f"{float(wl[i]):.4f}" for i in q), flush=True)
-    model = ModelState(enc=tok.enc, dec=tok.dec, df=df, win=cfg.rollout)
-    out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(out.parent / "losses.npz", tok=np.asarray(tl), wm=np.asarray(wl))
-    meta = {"cfg": asdict(cfg) | {"num_actions": num_actions}, "train_s": round(time.time() - t0, 1),
-            "tokenizer_train_s": round(t2 - t1, 1), "data_sha256": data_sha,
-            "truncations": None if Tr is None else int(Tr.sum()),
-            "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-    arrs = {f"{k}.{i}": np.asarray(jax.device_get(leaf)) for k in ("enc", "dec", "df")
-            for i, leaf in enumerate(jax.tree.leaves(nnx.split(getattr(model, k))[1]))}
-    np.savez(out, meta=json.dumps(meta), **arrs)
-    print(f"[done] total {time.time()-t0:.1f}s -> {out}", flush=True)
-    return model
+    def incoming(k, v): return jnp.pad(jnp.asarray(data[k], float), ((1, 0), (0, 0)), constant_values=v)
+    A, R, Dn = incoming("actions", 0).astype(jnp.int32), incoming("rewards", 0), incoming("dones", 1)
+    Tr = incoming("truncated", 0) if "truncated" in data.files else 0 * R  # an end, but no death
+    Dn = jnp.maximum(Dn, Tr)
+    first = data["starts"] if "starts" in data.files else Dn  # frames that begin a game, else every piece start
+    starts = jnp.asarray(np.argwhere(np.asarray(first[:Dn.shape[0] - WIN + 1]) > 0))  # their (t, e)
+    model = Model(nnx.Rngs(cfg.seed))
+    print(f"[data] frames {frames.shape}, {time.time() - t0:.0f} s", flush=True)
+    tok, opt = lambda m, f, k, i: tok_loss(m, f, k, i, cfg.tok_batch), optimizer(cfg.tok_steps, 300, cfg.lr, 0)
+    loss = fit(model.tok, tok, frames.reshape(-1, H, W, 3), cfg.tok_steps, cfg, opt)
+    print(f"[tokenizer] loss {loss[0]:.4f} -> {loss[-1]:.5f}, {time.time() - t0:.0f} s", flush=True)
+    Z = jax.jit(lambda tok, f: jax.lax.map(tok.encode, f))(model.tok, frames)
+    model.tok.mean[...], model.tok.std[...] = Z.mean((0, 1, 2, 3)), Z.std((0, 1, 2, 3))
+    Z = (Z - model.tok.mean[...]) / model.tok.std[...]
+    wm = lambda m, d, k, i: wm_loss(m, d, k, i, cfg.wm_batch, cfg.wm_steps)
+    loss = fit(model.wm, wm, (Z, A, R, Dn, Tr, starts), cfg.wm_steps, cfg, optimizer(cfg.wm_steps, 100, cfg.lr, 0.01))
+    print(f"[world model] loss {loss[0]:.4f} -> {loss[-1]:.4f}, {time.time() - t0:.0f} s", flush=True)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(out, *jax.tree.leaves(model), meta=json.dumps(dict(cfg=asdict(cfg), train_s=round(time.time() - t0, 1))))
+
 def load_meta(path): return json.loads(str(np.load(path)["meta"]))
+
 def load_model(path):
-    z = np.load(path)
-    cfg = json.loads(str(z["meta"]))["cfg"]
-    mods = {"enc": Encoder(nnx.Rngs(0), cfg.get('temporal_codec', 0)), "dec": Decoder(nnx.Rngs(0)), "df": DF(nnx.Rngs(0), cfg["num_actions"], max(LMAX, cfg["rollout"]))}
-    out = {}
-    for k, mod in mods.items():
-        gdef, ref = nnx.split(mod)
-        leaves = [jnp.asarray(z[f"{k}.{i}"]) for i in range(len(jax.tree.leaves(ref)))]
-        out[k] = nnx.merge(gdef, jax.tree.unflatten(jax.tree.structure(ref), leaves))
-    return ModelState(out["enc"], out["dec"], out["df"], cfg["rollout"])
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--data", type=Path, default=Path("data/train.npz"))
-    p.add_argument("--out", type=Path, default=Path("runs/base/model.npz"))
-    for f in fields(Config):
-        p.add_argument(f"--{f.name.replace('_', '-')}", type=f.type, default=f.default)
-    a = p.parse_args()
-    train(a.data, a.out, Config(**{f.name: getattr(a, f.name) for f in fields(Config)}))
+    z, model = np.load(path), Model(nnx.Rngs(0))
+    leaves = [jnp.asarray(z[f"arr_{i}"]) for i in range(len(z.files) - 1)]
+    return jax.tree.unflatten(jax.tree.structure(model), leaves)
+
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser()
+    p.add_argument("--data", default="data/train.npz")
+    p.add_argument("--out", default="runs/base/model.npz")
+    for f in fields(Config):
+        p.add_argument(f"--{f.name.replace('_', '-')}", type=type(f.default), default=f.default)
+    args = vars(p.parse_args())
+    train(args.pop("data"), args.pop("out"), Config(**args))
