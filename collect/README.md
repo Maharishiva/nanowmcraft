@@ -82,10 +82,12 @@ A pool is one long recording (512 worlds x 4000 steps, about 2M transitions). Th
    (8 steps kept at each end), and cuts the rest into pieces of 128 to about 512 transitions that end at an episode
    end or on a quiet transition, never on an event; a protected rollout makes its piece as long as it needs;
 4. picks pieces to balance events, not frames: each time the piece with the best gain per (300 + its length). Each
-   event type is worth up to its target (its supply, at most 400 unless set); counterexamples to known world-model
-   flaws and a few rare events weigh 3x, first diamonds, deaths and complete rollouts 6x, sleep onsets 12x. The cells
-   coming into view are events too, by how long ago they were last on screen (2-3, 4-7, 8-15, 16-31, 32-127, 128+
-   frames), with targets per band; 4-7 and 8-15 weigh most, cells never seen before come by themselves;
+   event type is worth up to its target (its supply, at most 400 unless set). Plain work weighs 6x: chops, mining,
+   drinks, meals, places and crafts that succeed, counted over the whole day and again in daylight, as trips take
+   most of the safe daylight and would push the work into dark night frames. Counterexamples to known world-model
+   flaws weigh 6x, complete rollouts 6x to 12x, deaths 10x, first diamonds and sleep onsets 12x. The cells coming
+   into view are events too, by how long ago they were last on screen (2-3, 4-7, 8-15, 16-31, 32-127, 128+ frames),
+   with targets per band; 4-7 to 16-31 weigh most, cells never seen before come by themselves;
 5. packs the pieces into 250 streams of 2001 frames (longest first, first fit) and fills the free tails with the starts
    of spare pieces (the most eventful first). Every stream keeps at least one frame for such a tail, so a picked piece
    always keeps its last transition (and its death).

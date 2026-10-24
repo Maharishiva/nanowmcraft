@@ -49,25 +49,31 @@ CAUSES = ("none", "lava", "zombie", "skeleton", "starvation", "thirst", "exhaust
 POLICIES = (("goal walker on the pixel PPO diamond fine-tune", "walker.pkl", 0.6), ("pixel PPO", "h2_p1.pkl", 0.15),
             ("pixel, distilled from symbolic", "opd_1.pkl", 0.1), ("symbolic PPO", "sym_survive.pkl", 0.15))
 BANDS = ("new", 2, 4, 8, 16, 32, 128)       # cells coming into view: never seen, or last seen 2-3, 4-7, ... frames ago
-PRIORITY = dict(           # piece-choice weights (others 1): counterexamples to world-model habits 3, rare events 6
+WORK = dict(more_wood=14800, more_stone=23200, more_coal=2070, more_iron=1830, more_sapling=1350, drink=12150,
+            eat=4060, place_stone=12150, place_table=3600, place_furnace=2850, place_plant=1310, more_wood_pickaxe=1220,
+            more_stone_pickaxe=970, more_wood_sword=1210, more_stone_sword=930, more_iron_sword=500)
+DAY = dict(day_chop=10700, day_mine=17690, day_drink=6040, day_eat=2610, day_place=12320, day_craft=4060)
+PRIORITY = {               # piece-choice weights (others 1): work (successful chops, mining, drinks, meals, places and
+    **dict.fromkeys(WORK, 6), **dict.fromkeys(DAY, 6),        # crafts, all day and in daylight), counterexamples to
+    "more_stone": 8, "eat": 8, "place_stone": 12,              # world-model habits, rare events, cells coming into view
     **dict.fromkeys(("iron_sword_after_pickaxe", "stone_sword_after_pickaxe", "iron_at_old_furnace", "iron_press_spell",
                      "furnace_then_no_iron_press", "iron_press_no_furnace", "second_furnace", "place_plant",
                      "more_sapling", "unlock_eat_plant", "more_diamond", "more_iron_pickaxe", "coal_no_pickaxe",
                      "iron_craft_low_stone", "repeat_iron_craft", "iron_press_missing_one", "iron_craft_diagonal",
                      "first_furnace_3stone", "iron_press_furnace_in_view", "iron_sword_after_diamond",
                      "wood_press_table_in_view", "wood_press_after_craft", "wood_craft_7_wood",
-                     "repeat_table_in_view"), 3),
-    **dict.fromkeys(("death_lava_walk", "unlock_collect_diamond", "rollout_diamond", "rollout_plant",
-                     *(f"{k}_{c}" for k in ("death", "episode") for c in CAUSES[1:7])), 6),
-    iron_pickaxe_first=5, iron_craft_no_stone_sword=6, full_view_32=5, sleep_onset=12,
-    **dict(zip((f"cells_{b}" for b in BANDS), (0, 4, 32, 32, 20, 8, 8))))   # never-seen cells come by themselves
+                     "repeat_table_in_view"), 6),
+    **dict.fromkeys(("death_lava_walk", *(f"{k}_{c}" for k in ("death", "episode") for c in CAUSES[1:7])), 10),
+    "unlock_collect_diamond": 12, "rollout_diamond": 12, "rollout_plant": 6, "iron_pickaxe_first": 8,
+    "iron_craft_no_stone_sword": 6, "full_view_32": 5, "sleep_onset": 12,
+    **dict(zip((f"cells_{b}" for b in BANDS), (0, 4, 32, 36, 36, 8, 8)))}   # never-seen cells come by themselves
 TARGETS = dict(death_lava=100, death_lava_walk=100, death_zombie=270, death_skeleton=110, death_thirst=150,
                death_starvation=120, death_exhaustion=80, full_view_32=20000, rollout_diamond=130, more_diamond=600,
                unlock_collect_diamond=300,
                more_iron_pickaxe=540, coal_no_pickaxe=600, repeat_iron_craft=200, sleep_onset=3000,
                iron_press_no_furnace=700, iron_press_spell=80, iron_pickaxe_first=420, iron_craft_no_stone_sword=210,
                wood_press_table_in_view=850, wood_press_after_craft=470, repeat_table_in_view=530,
-               rollout_plant=130, **{f"episode_{k}": 40 for k in CAUSES[1:7]},
+               rollout_plant=130, **{f"episode_{k}": 40 for k in CAUSES[1:7]}, **WORK, **DAY,
                **dict(zip((f"cells_{b}" for b in BANDS), (8e5, 2.3e5, 4.4e5, 4.8e5, 3.8e5, 2.3e5, 5e4))))  # others 400
 D4 = jnp.asarray([[0, -1], [0, 1], [-1, 0], [1, 0]])                     # moves 1..4 and facing directions 1..4
 WALK = jnp.asarray([BT.GRASS.value, BT.SAND.value, BT.PATH.value])
@@ -449,6 +455,12 @@ def events(L, R):
     ev["wood_craft_7_wood"] = (up[..., h["wood_pickaxe"]] | up[..., h["wood_sword"]]) & (was[..., h["wood"]] >= 7)
     ev["repeat_table_in_view"] = ev["place_table"] & inview(BT.CRAFTING_TABLE.value)
     ev["first_furnace_3stone"] = ev["unlock_place_furnace"] & (was[..., h["stone"]] >= 3)
+    day = live & (lt[:-1] >= 0.5)                                  # work in daylight, where the frames show it
+    ev |= {f"day_{k}": m & day for k, m in (
+        ("chop", up[..., h["wood"]]), ("mine", up[..., [h[k] for k in ("sapling", "stone", "coal", "iron", "diamond")]]
+                                        .any(-1)),
+        ("drink", up[..., h["drink"]]), ("eat", up[..., h["food"]]), ("craft", up[..., h["wood_pickaxe"]:].any(-1)),
+        ("place", ev["place_stone"] | ev["place_table"] | ev["place_furnace"] | ev["place_plant"]))}
     ev["sleep_onset"] = L["sleeping"][1:] & ~L["sleeping"][:-1] & ~bnd
     ev["eat"], ev["drink"] = up[..., h["food"]], up[..., h["drink"]]
     ev["damage"] = dn[..., h["health"]] & (L["zombie"][:-1] | L["skeleton"][:-1])
