@@ -1,10 +1,9 @@
-"""Frozen benchmark: open-loop generation scored for looks (gFVD), action following (AF), game logic and memory, plus
-the reward and termination heads, on fixed clips of held-out real play (built by make_eval.py).
+"""Frozen benchmark: open-loop generation scored for looks (gFVD), game logic and memory, plus the reward and
+termination heads, on fixed clips of held-out real play (built by make_eval.py).
 
 Every clip starts with 8 real frames and the action into each; the model generates one frame per action after them.
   play    2048 windows of the data driver's play, 64 actions each; 512 hold a diamond, an iron tool, a plant eaten
           or a death in their first 16 future frames (a death clip ends at the death; later frames are not scored).
-          Also rolled out 16 frames under random actions with the same sampling keys.
   logic   8 scripted actions from a real state next to something to use, in 7 families: chop, mine (with the right
           and the wrong pickaxe), drink, eat, place, craft (with and without table, furnace or ingredients, in any
           order), sleep. In each family the real game changed something in half of the cases, nothing in the rest.
@@ -18,8 +17,6 @@ Probes read generated frames with the game's own textures (stored in the data fi
 gray map tint.
   gFVD     Frechet distance between the real and generated play frames 1-64 in the feature space of a fixed random
            CNN (seed 1234, never trained) over stacks of 4 consecutive frames, times 10^4. Lower is better.
-  AF       the share of play clips where the rollout under the recorded actions is closer (salient-pixel MSE over
-           frames 1-16) to the real future than the rollout under random actions; ties score half. 0.5 = blind.
   logic    a case passes if the HUD items (and food or drink where they are the point), the target cell and the sleep
            tint read the same as in the real game on all 8 generated frames. Per family: pass rate where something
            changed + pass rate where nothing changed - 1 (Youden's J; 0 for "never changes" and "always changes").
@@ -39,10 +36,10 @@ gray map tint.
   reward_ap / done_ap  the heads teacher-forced on the real play frames, each future frame read with 8 frames of
            context before it: average precision of |predicted reward| for the reward events and of the done
            probability for the deaths. reward_base / done_base are the shares of positives.
-  score    the north star, the mean of four parts, each clipped to [0, 1], 0 at a trivial model and 1 at the real
-           game: gFVD log(GFVD_ZERO / gFVD) / log(GFVD_ZERO / GFVD_ONE), AF (AF - 0.5) / (AF_ONE - 0.5), logic,
-           memory. GFVD_ZERO is the gFVD of copying the last context frame; GFVD_ONE and AF_ONE are the gFVD and AF
-           of the real game itself, replayed from the same states with fresh randomness (mobs, saplings, night).
+  score    the north star, the mean of three parts, each clipped to [0, 1], 0 at a trivial model and 1 at the real
+           game: gFVD log(GFVD_ZERO / gFVD) / log(GFVD_ZERO / GFVD_ONE), logic, memory. GFVD_ZERO is the gFVD of
+           copying the last context frame; GFVD_ONE is the gFVD of the real game itself, replayed from the same states
+           with fresh randomness (mobs, saplings, night).
 
 The model is any module (default train.py) with this interface; how it generates a frame is its own business, and
 so is how much of the past it keeps:
@@ -69,12 +66,11 @@ import jax.numpy as jnp
 import numpy as np
 
 H = W = 63
-A_N = 17
-CTX, FUT, AF_HOR, HEAD_HOR = 8, 64, 16, 16
+CTX, FUT, HEAD_HOR = 8, 64, 16
 EVAL_SEED, BATCH, FEAT_BATCH, PROBE_BATCH = 0, 256, 16, 2048
-CLIP, FEAT_SEED, THR = 4, 1234, 16 / 255
+CLIP, FEAT_SEED = 4, 1234
 GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 300
-GFVD_ZERO, GFVD_ONE, AF_ONE = 170.0, 14.0, 0.93     # measured on data/eval.npz (copy, replayed game)
+GFVD_ZERO, GFVD_ONE = 170.0, 14.0                  # measured on data/eval.npz (copy, replayed game)
 GAPS = (4, 8, 16, 32, 64, 10 ** 4)
 GROUPS = ("play", "logic", "memory", "long")
 
@@ -121,14 +117,6 @@ def frechet(fr, fg):
     cg = np.cov(fg, rowvar=False) + 1e-6 * np.eye(fg.shape[1])
     eig = np.linalg.eigvals(cr @ cg)
     return float(((mu_r - mu_g) ** 2).sum() + np.trace(cr) + np.trace(cg) - 2 * np.sum(np.sqrt(np.clip(eig.real, 0, None))))
-
-
-def salient_mse(pred, real, last_ctx, valid):
-    """Per clip, the squared error over the pixels of valid frames where the real future differs from the last
-    context frame."""
-    real, pred = real.astype(np.float32) / 255, pred.astype(np.float32) / 255
-    sal = (np.abs(real - last_ctx[:, None]).max(-1, keepdims=True) > THR) & valid[:, :, None, None, None]
-    return ((pred - real) ** 2 * sal).sum((1, 2, 3, 4)) / (sal.sum((1, 2, 3, 4)) + 1e-6)
 
 
 def average_precision(scores, labels):
@@ -194,14 +182,14 @@ def rollout(wm, model, context, context_actions, actions, keys):
     return np.asarray(jnp.stack(out, 1))
 
 
-def batches(d, g, *extra):
+def batches(d, g):
     """Per batch of BATCH clips of a group (the last one padded with copies of its last clip, so every call has the
-    same shape): the number of real clips, their frames, actions and extra arrays, and the batch's sampling key."""
+    same shape): the number of real clips, their frames and actions, and the batch's sampling key."""
     n = len(d[f"{g}_frames"])
     for b0 in range(0, n, BATCH):
         key = jax.random.PRNGKey(int(np.random.SeedSequence([EVAL_SEED, GROUPS.index(g), b0]).generate_state(1)[0]))
         idx = np.minimum(np.arange(b0, b0 + BATCH), n - 1)
-        yield min(BATCH, n - b0), d[f"{g}_frames"][idx], d[f"{g}_actions"][idx].astype(np.int32), [x[idx] for x in extra], key
+        yield min(BATCH, n - b0), d[f"{g}_frames"][idx], d[f"{g}_actions"][idx].astype(np.int32), key
 
 
 def read_heads(wm, model, frames, actions, key):
@@ -217,20 +205,15 @@ def read_heads(wm, model, frames, actions, key):
 
 def score_play(wm, model, d):
     features = frame_features()
-    out = {k: [] for k in ("fr", "fg", "err_true", "err_rand", "r_tf", "d_tf")}
+    out = {k: [] for k in ("fr", "fg", "r_tf", "d_tf")}
     valid = CTX + np.arange(FUT)[None] < d["play_valid_len"][:, None]
-    random_actions = np.random.default_rng(EVAL_SEED + 7).integers(0, A_N, (len(valid), AF_HOR)).astype(np.int32)
     preview = None
-    for n, frames, actions, (rand, ok), key in batches(d, "play", random_actions, valid):
+    for n, frames, actions, key in batches(d, "play"):
         kg, kt = jax.random.split(key)
-        keys = jax.random.split(kg, FUT)
         context, context_actions = frames[:, :CTX], actions[:, :CTX]
-        generated = rollout(wm, model, context, context_actions, actions[:, CTX:], keys)[:n]
-        randomized = rollout(wm, model, context, context_actions, rand, keys[:AF_HOR])[:n]
+        generated = rollout(wm, model, context, context_actions, actions[:, CTX:], jax.random.split(kg, FUT))[:n]
         reward, done = read_heads(wm, model, frames, actions, kt)
-        real, last, ok = frames[:n, CTX:], frames[:n, CTX - 1].astype(np.float32) / 255, ok[:n, :AF_HOR]
-        out["err_true"].append(salient_mse(generated[:, :AF_HOR], real[:, :AF_HOR], last, ok))
-        out["err_rand"].append(salient_mse(randomized, real[:, :AF_HOR], last, ok))
+        real = frames[:n, CTX:]
         out["fr"].append(features(real))
         out["fg"].append(features(generated))
         out["r_tf"].append(reward[:n])
@@ -240,16 +223,15 @@ def score_play(wm, model, d):
     o = {k: np.concatenate(v) for k, v in out.items()}
     reward, death = d["play_rewards"][:, CTX:], (d["play_dones"][:, CTX:] > 0) & valid
     fd = lambda hi: GFVD_SCALE * frechet(o["fr"][:, :hi][valid[:, :hi]], o["fg"][:, :hi][valid[:, :hi]])
-    t, r = o["err_true"], o["err_rand"]
     event = np.abs(reward[valid]) > 1e-6
-    return {"gFVD": fd(FUT), "gFVD_16": fd(AF_HOR), "AF": float(np.mean((r > t + 1e-8) + 0.5 * (np.abs(r - t) <= 1e-8))),
-            "reward_ap": average_precision(np.abs(o["r_tf"][valid]), event), "reward_base": float(event.mean()),
-            "done_ap": average_precision(o["d_tf"][valid], death[valid]), "done_base": float(death[valid].mean())}, preview
+    return {"gFVD": fd(FUT), "gFVD_16": fd(16), "reward_ap": average_precision(np.abs(o["r_tf"][valid]), event),
+            "reward_base": float(event.mean()), "done_ap": average_precision(o["d_tf"][valid], death[valid]),
+            "done_base": float(death[valid].mean())}, preview
 
 
 def generate(wm, model, d, g):
     out = []
-    for n, frames, actions, _, key in batches(d, g):
+    for n, frames, actions, key in batches(d, g):
         keys = jax.random.split(key, actions.shape[1] - CTX)
         out.append(rollout(wm, model, frames[:, :CTX], actions[:, :CTX], actions[:, CTX:], keys)[:n])
     return np.concatenate(out)
@@ -332,8 +314,8 @@ def score_memory(wm, model, d):
 
 
 def north_star(m):
-    parts = {"gfvd": np.log(GFVD_ZERO / max(m["gFVD"], 1e-9)) / np.log(GFVD_ZERO / GFVD_ONE),
-             "af": (m["AF"] - 0.5) / (AF_ONE - 0.5), "logic": m["logic"], "memory": m["memory"]}
+    parts = {"gfvd": np.log(GFVD_ZERO / max(m["gFVD"], 1e-9)) / np.log(GFVD_ZERO / GFVD_ONE), "logic": m["logic"],
+             "memory": m["memory"]}
     parts = {k: float(np.clip(v, 0, 1)) for k, v in parts.items()}
     return float(np.mean(list(parts.values()))), parts
 

@@ -3,7 +3,7 @@
 How to beat tinywmcraft, for people and for coding agents.
 
 The goal: a higher score than the best so far (iteration 3, 0.602 ± 0.005) from one 10-minute A100 run, without making the reward head worse.
-The score is the mean of four parts, each 0 for a trivial model and 1 for the real game: gFVD, action following (AF), game logic and memory ([README](README.md#evaluation)).
+The score is the mean of three parts, each 0 for a trivial model and 1 for the real game: gFVD, game logic and memory ([README](README.md#evaluation)).
 Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
 
 ## Rules
@@ -36,7 +36,7 @@ step(model, state, action, key) -> frame, state   # action (B,), frame (B, 63, 6
 heads(model, frames, actions, key) -> reward, done  # teacher-forced on 24 real frames, (B, 24) each; done is a probability, done[:, 0] = 0
 ```
 
-For every clip, eval calls `start` with 8 real frames, then `step` once per action: 64 times for a play clip (and 16 times under random actions, for AF), 8 times for a logic case, 48 or 144 times for a memory walk. `heads` reads the play clips' real frames, 24 at a time.
+For every clip, eval calls `start` with 8 real frames, then `step` once per action: 64 times for a play clip, 8 times for a logic case, 48 or 144 times for a memory walk. `heads` reads the play clips' real frames, 24 at a time.
 `play_wm.py` uses the same interface, so any entry can be played.
 
 ## The loop

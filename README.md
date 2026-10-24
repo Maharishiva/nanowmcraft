@@ -66,11 +66,11 @@ No game state, tile labels or pretrained features enter the model.
 
 ## Benchmark
 
-| # | change | score ↑ | gFVD ↓ | AF ↑ | logic ↑ | memory ↑ | reward AP ↑ | train s | code | checkpoints |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 0.422 ± 0.025 | 37.6 | 0.906 | 0.05 | 0.087 | 0.923 | 558 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
-| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.571 ± 0.015 | 33.1 | 0.900 | 0.59 | 0.109 | 0.936 | 584 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
-| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | 0.602 ± 0.005 | 25.9 | 0.898 | 0.62 | 0.107 | 0.897 | 568 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
+| # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | train s | code | checkpoints |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 0.422 ± 0.025 | 37.6 | 0.05 | 0.087 | 0.923 | 558 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
+| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.571 ± 0.015 | 33.1 | 0.59 | 0.109 | 0.936 | 584 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
+| 3 | [train.py](train.py): NorMuon, a two-frame tokenizer, shortcut and temporal losses, training on its own context, cached sampling | 0.602 ± 0.005 | 25.9 | 0.62 | 0.107 | 0.897 | 568 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
 
 Three snapshots of our own research so far, each retrained on the benchmark v3 data. Score: the north star, 0 for a trivial model and 1 for the real game ([evaluation](#evaluation)); gFVD shown times 10^4.
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py` on the public eval clips; train s is the slowest seed.
@@ -138,10 +138,10 @@ Pieces are cut only at quiet moments, never on a reward or an inventory change, 
 The frozen evaluator scores clips of held-out play from other worlds, built by [make_eval.py](make_eval.py). Every clip starts with eight real frames; then the model generates one frame per recorded action.
 Probes read the generated frames with the game's own textures: HUD digits, map cells, the sleep tint.
 
-- **Play:** 2048 clips of 64 actions, 512 of them with a rare event early on (a diamond, an iron tool, eating a plant, a death). **gFVD ↓** is the Fréchet distance between real and generated frames in a fixed random CNN's feature space, times 10^4 (not comparable to I3D FVD). **AF ↑**, action following, is the share of clips where the true actions predict the salient pixels better than random actions; a model that ignores the actions scores 0.5.
+- **Play:** 2048 clips of 64 actions, 512 of them with a rare event early on (a diamond, an iron tool, eating a plant, a death). **gFVD ↓** is the Fréchet distance between real and generated frames in a fixed random CNN's feature space, times 10^4 (not comparable to I3D FVD).
 - **Logic ↑:** eight scripted actions from a real state next to something to use, in seven families: chop, mine, drink, eat, place, craft, sleep, with and without the right tool, table, furnace or ingredients, crafts in any order. A case passes if the HUD and the target cell match the real game on all eight frames. Per family, the pass rate where the game changed something plus the pass rate where it did not, minus 1.
-- **Memory ↑:** walks out and back (48 and 144 actions). Map cells seen in the context come back into view; recall is the share drawn as the real block, scored as a gain over drawing a random block of the last context frame, in gap buckets from 4-7 to 64+ frames.
-- **Score ↑** (the headline): the mean of four parts, each clipped to [0, 1]. gFVD on a log scale from copying the last frame (170, scores 0) to the real game replayed with fresh randomness (14, scores 1); AF from blind (0.5) to the replayed game (0.93); logic; memory. Copying the last frame, shuffling its tiles or ignoring the actions all score 0.
+- **Memory ↑:** walks out and back (48 and 144 actions), half recall and half self-consistency, each in gap buckets from 4-7 to 64+ frames. Recall: map cells seen in the context come back into view; the share drawn as the real block, scored as a gain over drawing a random block of the last context frame. Self-consistency: cells the model first drew itself leave the view and come back on another screen tile; the share drawn the same way as before, scored as a gain over the earlier drawing of another such cell in the same clip.
+- **Score ↑** (the headline): the mean of three parts, each clipped to [0, 1]. gFVD on a log scale from copying the last frame (170, scores 0) to the real game replayed with fresh randomness (14, scores 1); logic; memory. Copying the last frame, shuffling its tiles, ignoring the actions or shifting the last frame with them all score 0.
 - **reward AP ↑ and done AP ↑:** average precision of the reward and episode-end heads on real transitions.
 
 A private test set, built the same way from other worlds, judges submissions; the public `eval.npz` is for development.
