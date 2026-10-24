@@ -3,7 +3,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>inside tinywmcraft: a 14M-parameter world model of Craftax</title>
-<meta name="description" content="How tinywmcraft works: a 5.2M tokenizer and an 8.6M flow-matching world model with reward and termination heads, trained from pixels and keys in under 10 minutes on one A100.">
+<meta name="description" content="How tinywmcraft works: a 5.2M tokenizer and an 8.6M flow-matching world model with reward and termination heads, trained from pixels and actions in under 10 minutes on one A100.">
 <meta name="theme-color" content="#0a0a0a">
 <meta name="color-scheme" content="dark">
 <link rel="canonical" href="https://maharishiva.github.io/tinywmcraft/model.html">
@@ -12,7 +12,7 @@
 <meta property="og:site_name" content="tinywmcraft">
 <meta property="og:url" content="https://maharishiva.github.io/tinywmcraft/model.html">
 <meta property="og:title" content="Inside tinywmcraft: a 14M-parameter world model of Craftax">
-<meta property="og:description" content="A tokenizer and a flow-matching world model, trained from pixels and keys in under 10 minutes on one A100.">
+<meta property="og:description" content="A tokenizer and a flow-matching world model, trained from pixels and actions in under 10 minutes on one A100.">
 <meta property="og:image" content="https://maharishiva.github.io/tinywmcraft/assets/card.png">
 <meta name="twitter:card" content="summary_large_image">
 <style>
@@ -58,12 +58,12 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <a class="gh" href="https://github.com/Maharishiva/tinywmcraft"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
 <a href="./"><img class="logo" src="assets/logo-dark.png" alt="tinywmcraft" width="2140" height="360"></a>
 <h1>Inside the <span class="o">world model</span></h1>
-<p class="sub">13.9M parameters: a 5.2M tokenizer and an 8.6M world model, learned from scratch from pixels and keys alone. One cold training run is under 10 minutes on one A100, about $0.1 of compute.</p>
+<p class="sub">13.9M parameters: a 5.2M tokenizer and an 8.6M world model, learned from scratch from pixels and actions alone. One cold training run is under 10 minutes on one A100, about $0.1 of compute.</p>
 <nav class="links"><a class="back" href="./#play">play it</a><a href="benchmark.html">benchmark</a><a href="train_tiny.html">the whole model on one page</a></nav>
 </header>
 
 <h2 id="what">what it does</h2>
-<p>RL agents of mixed skill played 500k transitions of <a href="https://github.com/MichaelTMatthews/Craftax">Craftax-Classic</a>, a 2D Minecraft, some of them all the way to iron tools and diamonds. tinywmcraft learns the game from those frames and keys: given a history of frames and an action, it generates the next frame, the reward and whether the episode ends. Feed its own frames back in and you can play inside it. No game state, tile labels or pretrained features enter the model.</p>
+<p>Four RL agents played 500k transitions of <a href="https://github.com/MichaelTMatthews/Craftax">Craftax-Classic</a>, a 2D Minecraft: they reach diamonds, die in every way the game allows, break their own crafting habits and walk back to places they saw before. tinywmcraft learns the game from those frames and actions: given a history of frames and an action, it generates the next frame, the reward and whether the episode ends. Feed its own frames back in and you can play inside it. No game state, tile labels or pretrained features enter the model.</p>
 <figure class="wide"><picture><source media="(max-width:560px)" srcset="assets/architecture_v1.gif" width="540" height="877"><img class="px" src="assets/architecture.gif" alt="Frames go through the encoder to 4×4×32 latents, the world model denoises the newest latent in eight steps conditioned on the key, and the decoder shows the frame at every step" width="1200" height="400"></picture><figcaption>What runs on every keypress. No game engine and no game state: the encoder turns past frames into 4×4×32 latents, the world model denoises the next latent in eight steps conditioned on your key, and the decoder draws it.</figcaption></figure>
 
 <h2 id="how">inside the model</h2>
@@ -82,9 +82,9 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <p class="refs"><a href="https://arxiv.org/abs/2402.16801">Craftax</a> · <a href="https://arxiv.org/abs/2210.02747">Flow Matching</a> · <a href="https://arxiv.org/abs/2407.01392">Diffusion Forcing</a> · <a href="https://arxiv.org/abs/2212.09748">DiT</a> · <a href="https://arxiv.org/abs/2509.24527">Dreamer 4</a> · <a href="https://arxiv.org/abs/2410.12557">Shortcut Models</a> · <a href="https://kellerjordan.github.io/posts/muon/">Muon</a> · <a href="https://arxiv.org/abs/2510.05491">NorMuon</a> · <a href="https://arxiv.org/abs/1812.01717">FVD</a></p>
 <nav class="links"><a class="back" href="./#play">play it</a><a href="benchmark.html">benchmark</a><a href="https://github.com/Maharishiva/tinywmcraft">github</a></nav>
 
-<footer>MIT license · <a href="./">play</a> · <a href="https://github.com/Maharishiva/tinywmcraft">github</a> · <a href="benchmark.html">benchmark</a> · <a href="https://huggingface.co/maharishiva/tinywmcraft">checkpoints</a> · <a data-dataset href="#">dataset</a></footer>
+<footer>MIT license · <a href="./">play</a> · <a href="https://github.com/Maharishiva/tinywmcraft">github</a> · <a href="benchmark.html">benchmark</a> · <a href="https://huggingface.co/maharishiva/tinywmcraft-v3">checkpoints</a> · <a data-dataset href="#">dataset</a></footer>
 </main>
 <script>
-for (const el of document.querySelectorAll("a[data-dataset]")) el.href = "https://huggingface.co/datasets/maharishiva/tinywmcraft";
+for (const el of document.querySelectorAll("a[data-dataset]")) el.href = "https://huggingface.co/datasets/maharishiva/tinywmcraft-v3";
 </script>
 </body></html>
