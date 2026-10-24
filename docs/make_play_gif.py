@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 
 import train
+from clips import streams
 
 train.CDT = jnp.float32                                   # fp32 on CPU, as in play_wm.py
 train.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
@@ -169,7 +170,7 @@ def main():
     p.add_argument("--style", choices=("explore", "craft"), default="explore")
     p.add_argument("--fps", type=float, default=8.0)
     a = p.parse_args()
-    data = dict(np.load(a.data))
+    data = streams(a.data)
     start, env = rank_windows(data, a.style)[a.rank]
     L = CTX + T
     frames = data["frames"][start:start + L, env]

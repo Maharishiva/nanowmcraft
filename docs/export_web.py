@@ -35,6 +35,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from clips import streams
 
 def _load_train():
     """The module given by --train (read before the full argument parse: everything below depends on it)."""
@@ -193,6 +194,13 @@ def pick_starts(data, n, seed=0):
     return [(e, t) for _, e, t in sorted(best, reverse=True)[:n]]
 
 
+def any_window(data):
+    """(env, last frame) of the first window of PAST frames, and the frame before them, inside one episode: the check's
+    window when pick_starts finds none (clips that start mid-episode, at night)."""
+    D = data["dones"]
+    return next((e, t) for e in range(D.shape[1]) for t in range(PAST, D.shape[0]) if not D[t - PAST:t, e].any())
+
+
 def latents(model, data, picks):
     """Standardized latents (N, PAST, GLAT, GLAT, TOK) of the PAST frames up to each (env, t): encoded with one more
     frame in front and that one dropped, so a two-frame tokenizer sees every frame's true predecessor (pick_starts
@@ -337,11 +345,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, default=Path("runs/base/model.npz"))
     p.add_argument("--train", type=Path, help="the module that defines the model (read before this parse)")
-    p.add_argument("--data", type=Path, default=Path("data/eval.npz"), help="held-out episodes for the check")
+    p.add_argument("--data", type=Path, default=Path("data/eval.npz"), help="held-out play for the check (clips.py)")
     p.add_argument("--copy", type=Path, help="also copy play.onnx here")
     a = p.parse_args()
-    docs, model, data = Path(__file__).resolve().parent, train.load_model(a.model), dict(np.load(a.data))
-    pick = pick_starts(data, 1)[0]
+    docs, model, data = Path(__file__).resolve().parent, train.load_model(a.model), streams(a.data)
+    pick = (pick_starts(data, 1) or [any_window(data)])[0]
     half_weights(model)
     export(model, docs / "play.onnx")
     print(f"play.onnx: {(docs / 'play.onnx').stat().st_size / 1e6:.1f} MB")

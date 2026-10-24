@@ -27,10 +27,11 @@ def rollout(model_path, data_path, seed=0):
     import jax.numpy as jnp
     import flax.nnx as nnx
     import train
+    from clips import streams
     from make_play_gif import rank_windows
     train.CDT = jnp.float32
     train.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
-    data = dict(np.load(data_path))
+    data = streams(data_path)
     start, env = rank_windows(data, "craft")[0]
     frames = data["frames"][start:start + NCTX + NGEN, env]
     actions = data["actions"][start - 1:start + NCTX + NGEN - 1, env].astype(np.int32)
