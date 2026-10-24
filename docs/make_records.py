@@ -7,10 +7,12 @@ page's static top three.
         --checkpoints https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3
     python docs/make_records.py render
 
-add: the means over the three seeds (the score with its sample SD), the slowest train_s and eval_s and each seed's
-row, as row n of records.jsonl (replaced if it is there). Prints the gates against the best other row: the score
-margin 1.65 * sqrt((sd_best^2 + sd_new^2) / 3), reward AP at or above 95% of iteration 1's, train_s <= 600 and
-eval_s <= 300 for every seed, seeds 0, 1 and 2.
+add: each seed's score recomputed with eval.north_star (so rows from an older eval.py count the same way), the means
+over the three seeds (the score with its sample SD, and score_geometric), the slowest train_s and eval_s and each
+seed's row, as row n of records.jsonl (replaced if it is there). --ledger takes several files. Prints the gates on
+the three-seed means against the best other row: the score margin 1.65 * sqrt((sd_best^2 + sd_new^2) / 3), reward
+AP at or above 95% of iteration 1's, done AP at or above eval.DONE_AP_FLOOR, train_s <= 600 and eval_s <= 300 for
+every seed, seeds 0, 1 and 2. Needs the repo's Python (eval.py imports jax); render does not.
 render: the rows of the README's benchmark table (the columns its header names), docs/index.html's top three,
 best score and next iteration number, and the numbers in the rules (program.md, benchmark.html): the best score
 to beat, its eval time and the reward AP floor.
@@ -19,14 +21,17 @@ import argparse
 import json
 import re
 import statistics
+import sys
 from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RECORDS, README, INDEX = ROOT / "docs" / "records.jsonl", ROOT / "README.md", ROOT / "docs" / "index.html"
 PROGRAM, BENCH = ROOT / "program.md", ROOT / "docs" / "benchmark.html"
-MEANS = ("score", "gFVD", "logic", "memory", "reward_ap", "done_ap")
-SEED_KEYS = ("score", "gFVD", "gFVD_16", "logic", "memory", "reward_ap", "done_ap", "train_s", "eval_s")
+MEANS = ("score", "score_geometric", "gFVD", "logic", "memory", "memory_recall_part", "memory_self_part", "reward_ap",
+         "done_ap")
+SEED_KEYS = ("score", "score_geometric", "gFVD", "gFVD_16", "logic", "memory", "memory_recall_part", "memory_self_part",
+             "reward_ap", "reward_base", "done_ap", "done_base", "train_s", "eval_s")
 TRAIN_BUDGET_S, EVAL_BUDGET_S, FLOOR = 600, 300, 0.95
 CROWN = '<img class="crown" src="icons/crown.png" alt="crown" onerror="this.remove()">'
 
@@ -46,8 +51,12 @@ def load():
 
 
 def add(a):
-    ledger = [json.loads(l) for l in Path(a.ledger).read_text().splitlines() if l.strip()]
+    sys.path.insert(0, str(ROOT))
+    import eval as E                                                                # the score and the floors
+    ledger = [json.loads(l) for f in a.ledger for l in Path(f).read_text().splitlines() if l.strip()]
     rows = [next(r for r in reversed(ledger) if r["tag"] == t) for t in a.tags]      # the last row of each tag
+    for r in rows:                                                                  # the score of this eval.py
+        r["score"], r["score_geometric"], r["parts"] = E.north_star(r)
     seeds = [r.get("train_seed", r.get("seed")) for r in rows]
     rec = dict(n=a.n, date=a.date, author=a.author, change=a.change, code=a.code, checkpoints=a.checkpoints)
     for k in MEANS:
@@ -64,9 +73,12 @@ def add(a):
     checks = [("seeds 0, 1, 2", sorted(seeds) == [0, 1, 2]),
               (f"train_s <= {TRAIN_BUDGET_S} (max {rec['train_s']})", rec["train_s"] <= TRAIN_BUDGET_S),
               (f"eval_s <= {EVAL_BUDGET_S} (max {rec['eval_s']})", rec["eval_s"] <= EVAL_BUDGET_S)]
+    checks.append((f"done AP {rec['done_ap']:.3f} >= floor {E.DONE_AP_FLOOR}", rec["done_ap"] >= E.DONE_AP_FLOOR))
     if first is not None:
         floor = round(FLOOR * first["reward_ap"], 3)
         checks.append((f"reward AP {rec['reward_ap']:.3f} >= floor {floor}", rec["reward_ap"] >= floor))
+        if abs(floor - E.REWARD_AP_FLOOR) > 5e-4:
+            print(f"note: eval.py flags runs with REWARD_AP_FLOOR {E.REWARD_AP_FLOOR}; 95% of iteration 1 is {floor}")
     if best is not None:
         margin = 1.65 * ((best["score_sd"] ** 2 + rec["score_sd"] ** 2) / 3) ** 0.5
         checks.append((f"score {rec['score']:.3f} - best {best['score']:.3f} (#{best['n']}) > margin {margin:.3f}",
@@ -130,7 +142,7 @@ def render(a):
     subs = {PROGRAM: [(rf"(The goal: a higher score than the best so far \(iteration )\d+, {N} ± {N}",
                        rf"\g<1>{best['n']}, {score} ± {sd}"),
                       (rf"iteration \d+ takes about {N} s", f"iteration {best['n']} takes about {eval_s} s"),
-                      (rf"(\| reward_ap \|\n\|---:\|\n\| ){N}", rf"\g<1>{floor}")],
+                      (rf"(\| reward_ap \| done_ap \|\n\|---:\|---:\|\n\| ){N}", rf"\g<1>{floor}")],
             BENCH: [(rf"reward AP ≥ {N}", f"reward AP ≥ {floor}"),
                     (rf"\(iteration \d+: about {N} s\)", f"(iteration {best['n']}: about {eval_s} s)")]}
     for path, rules in subs.items():
@@ -148,7 +160,7 @@ def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     q = sub.add_parser("add")
-    q.add_argument("--ledger", required=True)
+    q.add_argument("--ledger", nargs="+", required=True, help="eval.py ledgers (jsonl), the last row of a tag wins")
     q.add_argument("--tags", nargs=3, required=True, help="the ledger tags of seeds 0, 1 and 2")
     q.add_argument("--n", type=int, required=True, help="the iteration number")
     q.add_argument("--change", required=True)
