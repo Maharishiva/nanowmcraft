@@ -77,7 +77,7 @@ P1, P2, P3 = (18, 18, 20), (28, 28, 30), (58, 58, 62)
 TXT = (196, 196, 194)
 NAMES = ["NOOP", "LEFT", "RIGHT", "UP", "DOWN", "DO", "SLEEP", "PLACE STONE", "PLACE TABLE", "PLACE FURNACE",
          "PLACE PLANT", "WOOD PICKAXE", "STONE PICKAXE", "IRON PICKAXE", "WOOD SWORD", "STONE SWORD", "IRON SWORD"]
-KEYS = ["Q", "A", "D", "W", "S", "SPACE", "TAB", "R", "T", "F", "P", "1", "2", "3", "4", "5", "6"]
+KEYS = ["Q", "A", "D", "W", "S", "ACTION", "TAB", "R", "T", "F", "P", "1", "2", "3", "4", "5", "6"]
 FONT = {
     "A": "010 101 111 101 101", "B": "110 101 110 101 110", "C": "011 100 100 100 011", "D": "110 101 101 101 110",
     "E": "111 100 110 100 111", "F": "111 100 110 100 100", "G": "011 100 101 101 011", "H": "101 101 111 101 101",

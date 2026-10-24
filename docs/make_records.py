@@ -31,6 +31,16 @@ TRAIN_BUDGET_S, EVAL_BUDGET_S, FLOOR = 600, 300, 0.95
 CROWN = '<img class="crown" src="icons/crown.png" alt="crown" onerror="this.remove()">'
 
 
+def num(v, d):
+    """A number with d decimals; a placeholder such as {SCORE_IT3} stays as it is (rows written before the numbers)."""
+    return "–" if v is None else f"{v:.{d}f}" if isinstance(v, (int, float)) else str(v)
+
+
+def rank(r):
+    """Best first: the score, then (rows without numbers yet) the newest iteration."""
+    return (r["score"] if isinstance(r.get("score"), (int, float)) else float("-inf"), r["n"])
+
+
 def load():
     return [json.loads(l) for l in RECORDS.read_text().splitlines() if l.strip()] if RECORDS.exists() else []
 
@@ -48,8 +58,8 @@ def add(a):
     rec["eval_s"] = round(max(r["eval_s"] for r in rows), 1)
     rec["seeds"] = [{"seed": s, **{k: round(r[k], 4) for k in SEED_KEYS if k in r}} for s, r in zip(seeds, rows)]
     old = [r for r in load() if r["n"] != a.n]
-    best = max(old, key=lambda r: r["score"], default=None)
-    first = next((r for r in old + [rec] if r["n"] == 1), None)
+    best = max((r for r in old if isinstance(r.get("score"), (int, float))), key=rank, default=None)
+    first = next((r for r in old + [rec] if r["n"] == 1 and isinstance(r.get("reward_ap"), (int, float))), None)
     print(json.dumps({k: v for k, v in rec.items() if k != "seeds"}))
     checks = [("seeds 0, 1, 2", sorted(seeds) == [0, 1, 2]),
               (f"train_s <= {TRAIN_BUDGET_S} (max {rec['train_s']})", rec["train_s"] <= TRAIN_BUDGET_S),
@@ -71,7 +81,7 @@ def add(a):
 
 def fmt(r, col):
     """One README cell, by the header's column name."""
-    f = lambda k, d: "–" if r.get(k) is None else f"{r[k]:.{d}f}"
+    f = lambda k, d: num(r.get(k), d)
     name = col.replace("↑", "").replace("↓", "").strip()
     if name == "#":
         return str(r["n"])
@@ -98,28 +108,31 @@ def render(a):
         end += 1
     lines[h + 2:end] = ["| " + " | ".join(fmt(r, c) for c in cols) + " |" for r in recs]
     README.write_text("\n".join(lines))
-    top = sorted(recs, key=lambda r: -r["score"])[:3]
+    top = sorted(recs, key=rank, reverse=True)[:3]
     who = lambda r: f'<a href="https://github.com/{r["author"]}">{r["author"]}</a>'
     lead = ' class="lead"'
     li = "\n".join(f'<li{lead if i == 0 else ""}><span class="r">{i + 1}</span><span class="who">'
-                   f'{CROWN if i == 0 else ""}{who(r)}</span><span class="g">{r["score"]:.3f} <span class="sd">± '
-                   f'{r["score_sd"]:.3f}</span></span><span class="ch"><a href="{r["code"]}">iteration {r["n"]}</a> · '
+                   f'{CROWN if i == 0 else ""}{who(r)}</span><span class="g">{num(r["score"], 3)} <span class="sd">± '
+                   f'{num(r["score_sd"], 3)}</span></span><span class="ch"><a href="{r["code"]}">iteration {r["n"]}</a> · '
                    f'{r["change"]}</span></li>' for i, r in enumerate(top))
     s = INDEX.read_text()
     s = re.sub(r'(<ol class="top" id="benchmark">\n).*?(\n</ol>)', lambda m: m[1] + li + m[2], s, count=1, flags=re.S)
-    s = re.sub(r'<span id="best">[^<]*</span>', f'<span id="best">{top[0]["score"]:.3f}</span>', s, count=1)
+    s = re.sub(r'<span id="best">[^<]*</span>', f'<span id="best">{num(top[0]["score"], 3)}</span>', s, count=1)
     s = re.sub(r'<span id="next">[^<]*</span>', f'<span id="next">{max(r["n"] for r in recs) + 1}</span>', s, count=1)
     s = re.sub(r'(<p class="np" id="np">).*?(</p>)', lambda m: f'{m[1]}now playing: <a href="{top[0]["code"]}">iteration '
                f'{top[0]["n"]}</a> by {CROWN}{who(top[0])}{m[2]}', s, count=1)
     INDEX.write_text(s)
     # the numbers in the rules: the best score to beat, its eval time, the reward AP floor (95% of iteration 1)
-    best, floor = top[0], FLOOR * next(r for r in recs if r["n"] == 1)["reward_ap"]
-    subs = {PROGRAM: [(r"(The goal: a higher score than the best so far \(iteration )\d+, [\d.]+ ± [\d.]+",
-                       rf"\g<1>{best['n']}, {best['score']:.3f} ± {best['score_sd']:.3f}"),
-                      (r"iteration \d+ takes about \d+ s", f"iteration {best['n']} takes about {best['eval_s']:.0f} s"),
-                      (r"(\| reward_ap \|\n\|---:\|\n\| )[\d.]+", rf"\g<1>{floor:.3f}")],
-            BENCH: [(r"reward AP ≥ [\d.]+", f"reward AP ≥ {floor:.3f}"),
-                    (r"\(iteration \d+: about \d+ s\)", f"(iteration {best['n']}: about {best['eval_s']:.0f} s)")]}
+    best, ap1 = top[0], next(r for r in recs if r["n"] == 1)["reward_ap"]
+    floor = num(FLOOR * ap1, 3) if isinstance(ap1, (int, float)) else "{REWARD_AP_FLOOR}"
+    score, sd, eval_s = num(best["score"], 3), num(best["score_sd"], 3), num(best["eval_s"], 0)
+    N = r"(?:[\d.]+|\{[A-Z0-9_]+\})"      # a number or a placeholder
+    subs = {PROGRAM: [(rf"(The goal: a higher score than the best so far \(iteration )\d+, {N} ± {N}",
+                       rf"\g<1>{best['n']}, {score} ± {sd}"),
+                      (rf"iteration \d+ takes about {N} s", f"iteration {best['n']} takes about {eval_s} s"),
+                      (rf"(\| reward_ap \|\n\|---:\|\n\| ){N}", rf"\g<1>{floor}")],
+            BENCH: [(rf"reward AP ≥ {N}", f"reward AP ≥ {floor}"),
+                    (rf"\(iteration \d+: about {N} s\)", f"(iteration {best['n']}: about {eval_s} s)")]}
     for path, rules in subs.items():
         s = path.read_text()
         for pat, rep in rules:
@@ -127,8 +140,8 @@ def render(a):
             if not k:
                 print(f"note: no match for {pat!r} in {path.name}")
         path.write_text(s)
-    print(f"README table: {len(recs)} rows; index.html: best {best['score']:.3f} (iteration {best['n']}); "
-          f"program.md and benchmark.html: reward AP floor {floor:.3f}, eval about {best['eval_s']:.0f} s")
+    print(f"README table: {len(recs)} rows; index.html: best {score} (iteration {best['n']}); "
+          f"program.md and benchmark.html: reward AP floor {floor}, eval about {eval_s} s")
 
 
 def main():
