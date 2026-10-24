@@ -121,14 +121,14 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <dl class="rules">
 <dt>data</dt><dd><a data-dataset href="#"><code>train.npz</code></a> on Hugging Face, 500k transitions. Nothing else, no pretrained weights.</dd>
 <dt>compute</dt><dd>600 s on one A100 40GB, everything included: tokenizer, data loading, compilation. No compile cache.</dd>
-<dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating every clip must take at most 300 s on the maintainer's Colab A100 (iteration 3: about {EVAL_S_IT3} s). Any model, any sampler, any context length.</dd>
+<dt>eval</dt><dd><code>eval.py</code> is frozen. Loading your model, compiling and generating every clip must take at most 300 s on the maintainer's Colab A100 (iteration 3: about 146 s). Any model, any sampler, any context length.</dd>
 <dt>frames</dt><dd>One frame per action: the model never sees future actions or frames.</dd>
 <dt>seeds</dt><dd>The score is the mean over training seeds 0, 1 and 2.</dd>
 <dt>gates</dt><dd>Ranked on the score alone, checked in the maintainer's rerun on the same machine and seeds, on a private test set built the same way from other worlds.</dd>
 </dl>
 <p>The score must beat the best mean by a noise-aware margin, where sd is the sample SD over the three seeds:</p>
 <p class="formula">new − best &gt; 1.65 · √((sd_best² + sd_new²) / 3)</p>
-<p>The three-seed means of the two heads must stay at or above fixed floors: <b>reward AP ≥ {REWARD_AP_FLOOR}</b> (95% of iteration 1) and <b>done AP ≥ 0.15</b>. The floors do not move when the best changes. Each eval.py row also flags its own run against them, for information only.</p>
+<p>The three-seed means of the two heads must stay at or above fixed floors: <b>reward AP ≥ 0.881</b> (95% of iteration 1) and <b>done AP ≥ 0.15</b>. The floors do not move when the best changes. Each eval.py row also flags its own run against them, for information only.</p>
 
 <h2 id="eval">evaluation</h2>
 <p>The frozen evaluator scores clips of held-out play from other worlds. Eight real frames prime the model, then it generates one frame per recorded action. Probes read the generated frames with the game's own textures: HUD digits, map cells, the sleep tint. The eval takes under 3 minutes on one A100.</p>
