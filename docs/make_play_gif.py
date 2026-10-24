@@ -1,5 +1,5 @@
 """Demo GIF: one held-out episode, eight real frames of priming, then the world model free-runs on the recorded
-actions. Left pane: real Craftax. Right pane: the world model. Below: the key being pressed, drawn pixel style.
+actions. Left pane: real Craftax. Right pane: the world model. Below: the action key pressed, drawn as in the player.
 
     python docs/make_play_gif.py --model runs/base/model.npz --style craft --out docs/assets/play.gif   # the README gif
 
@@ -17,9 +17,6 @@ import jax.numpy as jnp
 
 import train
 from clips import streams
-
-train.CDT = jnp.float32                                   # fp32 on CPU, as in play_wm.py
-train.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
 
 CTX, T = 8, 32
 SCALE, U = 4, 4                                           # game pixel -> 4 px; one UI "pixel" -> 4 px
@@ -107,25 +104,20 @@ def rank_windows(data, style="explore"):
     return [(start, env) for env, (start, score) in sorted(best.items(), key=lambda kv: -kv[1][1])]
 
 
-def rollout(model, ctx_frames, actions, key):
-    """train.imagine without its 32-frame limit: the latent rollout slides its window, and the reward head reads
-    two 32-frame windows. Returns T imagined frames and the predicted reward for arriving at each."""
-    import flax.nnx as nnx
-    ctx = train.encode(model, jnp.asarray(ctx_frames)[None])
-    ca, fa = jnp.asarray(actions[None, :CTX], jnp.int32), jnp.asarray(actions[None, CTX:], jnp.int32)
-    gdef, state = nnx.split(model.df)
-
-    @jax.jit
-    def run(state, ctx, ca, fa, key):
-        kr, k1, k2 = jax.random.split(key, 3)
-        df = nnx.merge(gdef, state)
-        zt = train._rollout_latents(df, ctx, ca, fa.T, kr, train.STEPS, model.win).transpose(1, 0, 2, 3, 4)
-        z, acts = jnp.concatenate([ctx, zt], 1), jnp.concatenate([ca, fa], 1)
-        r_first = train._read_heads(df, z[:, :train.WIN], acts[:, :train.WIN], k1)[0][:, CTX:]
-        r_last = train._read_heads(df, z[:, -train.WIN:], acts[:, -train.WIN:], k2)[0]
-        return zt, jnp.concatenate([r_first, r_last[:, -(CTX + T - train.WIN):]], 1)
-    zt, rewards = run(state, ctx, ca, fa, key)
-    return np.asarray(train.decode(model, zt)[0]), np.asarray(rewards[0])
+def rollout(model, ctx_frames, actions, key, heads_len=24):
+    """The model through eval.py's interface (start, step, heads), so any entry works: CTX real frames prime it, then
+    it imagines T frames from the recorded actions. The predicted reward for arriving at each imagined frame comes
+    from heads() over the heads_len frames up to it, imagined ones included."""
+    state, frames = train.start(model, jnp.asarray(ctx_frames)[None], jnp.asarray(actions[None, :CTX])), list(ctx_frames)
+    for t in range(T):
+        key, k = jax.random.split(key)
+        frame, state = train.step(model, state, jnp.asarray(actions[CTX + t:CTX + t + 1]), k)
+        frames.append(np.asarray(frame)[0])
+    seq, ends = np.stack(frames), np.arange(CTX, CTX + T)
+    first = np.maximum(ends - heads_len + 1, 0)
+    reward, _ = train.heads(model, jnp.asarray(np.stack([seq[i:i + heads_len] for i in first])),
+                            jnp.asarray(np.stack([actions[i:i + heads_len] for i in first])), key)
+    return seq[CTX:], np.asarray(reward)[np.arange(T), ends - first]
 
 
 def compose(real, imagined, action, step, priming, real_reward, pred_reward):
@@ -151,12 +143,12 @@ def compose(real, imagined, action, step, priming, real_reward, pred_reward):
     key(img, kx, ky + 8 * U, "A", action == 1)
     key(img, kx + 8 * U, ky + 8 * U, "S", action == 4)
     key(img, kx + 16 * U, ky + 8 * U, "D", action == 2)
-    key(img, kx + 26 * U, ky + 8 * U, "SPACE", action == 5, w=22 * U)
+    key(img, kx + 26 * U, ky + 8 * U, "ACTION", action == 5, w=22 * U)
     other = action not in (1, 2, 3, 4, 5)
     key(img, kx + 50 * U, ky + 8 * U, KEYS[action] if other else "", other, w=9 * U)
     text(img, rx, ky + 2 * U, f"STEP {step:02d}", DIM, 3)
     text(img, rx + 24 * U, ky + 2 * U, "PRIMING" if priming else name, DIM if priming else FG, 3)
-    text(img, rx, ky + 9 * U, "PRIMING ON 8 REAL FRAMES" if priming else "SAME KEYS, NO GAME STATE", DIM, 2)
+    text(img, rx, ky + 9 * U, "PRIMING ON 8 REAL FRAMES" if priming else "SAME ACTIONS, NO GAME STATE", DIM, 2)
     return img
 
 

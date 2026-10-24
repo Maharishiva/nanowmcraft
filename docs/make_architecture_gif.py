@@ -22,47 +22,39 @@ NCTX, NGEN, STEPS = 8, 4, 8
 
 
 def rollout(model_path, data_path, seed=0):
-    """Encode 8 real frames of the craft window used by assets/play.gif, then imagine 4 frames, keeping every Euler step."""
+    """Encode 8 real frames of the craft window used by assets/play.gif, then imagine 4 frames as train.sample does
+    (the past runs once to cache its keys and values, then 8 Euler steps carry the new slot from noise), keeping every
+    Euler step."""
     import jax
     import jax.numpy as jnp
-    import flax.nnx as nnx
     import train
     from clips import streams
     from make_play_gif import rank_windows
-    train.CDT = jnp.float32
-    train.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
     data = streams(data_path)
     start, env = rank_windows(data, "craft")[0]
     frames = data["frames"][start:start + NCTX + NGEN, env]
     actions = data["actions"][start - 1:start + NCTX + NGEN - 1, env].astype(np.int32)
     model = train.load_model(model_path)
-    gdef, state = nnx.split(model.df)
-    ctx = train.encode(model, jnp.asarray(frames[None, :NCTX]))[0]
-    win = model.win
+    wm, win, dt = model.wm, train.WIN, 1.0 / STEPS
+    ctx = model.tok.encode(jnp.asarray(frames[None, :NCTX]))[0]
     seq = jnp.zeros((1, win) + ctx.shape[1:]).at[0, :NCTX].set(ctx)
-    aseq = jnp.zeros((1, win), jnp.int32).at[0, :NCTX].set(jnp.asarray(actions[:NCTX]))
-
-    @jax.jit
-    def predict(state, seq, taus, aseq, s, z, tau):
-        return nnx.merge(gdef, state)(seq.at[:, s].set(z), taus.at[:, s].set(jnp.full((1,), tau)), aseq)[:, s]
-
-    key, dt, zs_all = jax.random.PRNGKey(seed), 1.0 / STEPS, []
+    aseq = jnp.zeros((1, win), jnp.int32).at[0, :NCTX + NGEN].set(jnp.asarray(actions))
+    tau = jnp.where(jnp.arange(win) < NCTX, 1.0, train.CTX_SIGNAL)[None]              # real frames clean
+    past = jax.jit(lambda seq, key: wm(train.noised(seq, tau[..., None, None, None], key), tau, aseq)[2])
+    euler = jax.jit(lambda x, t, cache, n: wm(x[:, None], jnp.full((1, 1), t), aseq[:, n][:, None], cache, n, dt)[0][:, 0])
+    key, zs_all = jax.random.PRNGKey(seed), []
     for f in range(NGEN):
         n = NCTX + f
-        aseq = aseq.at[0, n].set(int(actions[n]))
-        taus = jnp.where(jnp.arange(win) < n, jnp.where(jnp.arange(win) < NCTX, 1.0, train.CTX_SIGNAL), 0.0)[None]
         key, kc, kz = jax.random.split(key, 3)
-        t5 = taus[..., None, None, None]
-        seqc = jnp.where(t5 > 0.5, t5 * seq + (1.0 - t5) * jax.random.normal(kc, seq.shape), seq)
-        z, zs = jax.random.normal(kz, (1,) + seq.shape[-3:]), []
+        cache, z, zs = past(seq, kc), jax.random.normal(kz, (1,) + seq.shape[-3:]), []
         for k in range(STEPS):
             zs.append(np.asarray(z[0]))
-            z = z + dt * (predict(state, seqc, taus, aseq, n, z, k * dt) - z) / max(1.0 - k * dt, 1e-4)
+            z = z + (euler(z, k * dt, cache, n) - z) / (STEPS * (1.0 - k * dt))
         zs.append(np.asarray(z[0]))
         seq = seq.at[:, n].set(z)
         zs_all.append(zs)
     Z = np.array(zs_all)
-    zdec = np.stack([np.asarray(train.decode(model, jnp.asarray(Z[f]))) for f in range(NGEN)])
+    zdec = np.stack([np.round(np.asarray(model.tok.decode(jnp.asarray(Z[f]))) * 255).astype(np.uint8) for f in range(NGEN)])
     return frames, actions, np.asarray(ctx), Z, zdec
 
 
