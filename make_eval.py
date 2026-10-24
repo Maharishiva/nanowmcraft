@@ -11,10 +11,14 @@ terminal states). Every clip starts with 8 real frames; everything after them is
   memory  planned walks from daylight states out to B (sometimes on to C) and back to the start or beside it: 48
           actions, 144 for the long walks. Checks: cells seen in the context that leave the view and come back
           unchanged, on a screen tile that showed another block in the last context frame; and each block's share of
-          the last context frame (chance).
+          the last context frame (chance). Self checks: cells first seen in a generated frame that leave the view for 4
+          or more frames and come back unchanged on another screen tile than the one they left from, with no mob or
+          arrow on them either time: (clip, frame back, row, column, frame last seen, its row, its column, gap).
 Labels are read back with eval.py's probes on the real frames; a label they cannot read is dropped.
 
     python make_eval.py --pool pools/eval.npz --out data/eval.npz
+    python make_eval.py --pool pools/eval.npz --augment data/eval.npz --out data/eval_new.npz   (same pool and seed: adds
+        the arrays that the file lacks, after checking that every array in it is rebuilt unchanged)
 """
 import argparse
 import json
@@ -297,7 +301,9 @@ def walks(pool, rng, n_walks, length, lo, hi):
     pos, maps = cat("player_position", S.player_position), cat("map", S.map.astype(np.uint8))
     mobs = cat("mob_map", S.mob_map)
     light, fr = S.light_level, frames_of(S)
-    checks, prior, (R, C) = [], np.zeros((n, 19), np.float32), np.mgrid[0:7, 0:9]
+    busy, (bi, bt, ba) = mobs.copy(), np.nonzero(S.arrows.mask)             # a mob or an arrow on the cell
+    busy[bi, CTX + bt, S.arrows.position[bi, bt, ba, 0].clip(0, 63), S.arrows.position[bi, bt, ba, 1].clip(0, 63)] = True
+    checks, selfs, prior, (R, C) = [], [], np.zeros((n, 19), np.float32), np.mgrid[0:7, 0:9]
     for k in range(n):                                                  # a cell returns: back in view after >= 4 frames
         last, seen = np.full((64, 64), -1), np.zeros((64, 64), bool)
         for j in range(CTX + length):
@@ -312,6 +318,12 @@ def walks(pool, rng, n_walks, length, lo, hi):
                 back = inb & seen[rr, cc] & (sl >= 0) & (j - sl >= 4) & (cls != screen) & ~mobs[k, j, rr, cc]
                 back &= (cls == maps[k, sl.clip(0), rr, cc]) & ~mobs[k, sl.clip(0), rr, cc]
                 checks += [(k, j - CTX, r_, c_, cls[r_, c_] - 1, j - sl[r_, c_]) for r_, c_ in zip(*np.nonzero(back))]
+                for r_, c_ in zip(*np.nonzero(inb & ~seen[rr, cc] & (sl >= CTX) & (j - sl >= 4))):   # self checks
+                    w, jl = (rr[r_, c_], cc[r_, c_]), sl[r_, c_]
+                    rp, cp = w[0] - pos[k, jl, 0] + 3, w[1] - pos[k, jl, 1] + 4
+                    if (rp, cp) != (r_, c_) and maps[k, jl][w] == cls[r_, c_] and light[k, jl - CTX] >= 0.5 \
+                            and not busy[k, j][w] and not busy[k, jl][w]:
+                        selfs.append((k, j - CTX, r_, c_, jl - CTX, rp, cp, j - jl, cls[r_, c_] - 1))
             last[rr[inb], cc[inb]] = j
             seen[rr[inb], cc[inb]] |= j < CTX
     ch = np.array(checks, np.int32)
@@ -320,11 +332,18 @@ def walks(pool, rng, n_walks, length, lo, hi):
     use = np.unique(ch[:, 0])[:n_walks]
     ch = ch[np.isin(ch[:, 0], use)]
     ch[:, 0] = np.searchsorted(use, ch[:, 0])
+    sc = np.array(selfs, np.int32).reshape(-1, 9)
+    sc = sc[np.isin(sc[:, 0], use)]
+    read_at = lambda f, rc: E.read_cells(fr[sc[:, 0], sc[:, f]], sc[:, rc:rc + 2], light[sc[:, 0], sc[:, f]], P["tile_tex"],
+                                         P["tile_night"])
+    sc = sc[(read_at(1, 2) == sc[:, 8]) & (read_at(4, 5) == sc[:, 8]), :8]
+    sc[:, 0] = np.searchsorted(use, sc[:, 0])
     ctx_f, ctx_a = context(pool, t_[use], e_[use])
     print(f"walks: {len(use)} of {n}, {len(ch)} checks, per gap bucket {np.histogram(ch[:, 5], E.GAPS)[0]}", flush=True)
+    print(f"walks: {len(sc)} self checks, per gap bucket {np.histogram(sc[:, 7], E.GAPS)[0]}", flush=True)
     return dict(frames=np.concatenate([ctx_f, fr[use]], 1), actions=np.concatenate([ctx_a, acts[use]], 1),
                 light=light[use].astype(np.float32), checks=ch.astype(np.int16), prior=prior[use],
-                src=np.stack([t_, e_], 1)[use])
+                src=np.stack([t_, e_], 1)[use], self=sc.astype(np.int16))
 
 
 def play(pool, rng):
@@ -376,6 +395,7 @@ def main():
     p.add_argument("--pool", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--augment", type=Path, help="a clip file built from the same pool and seed: add the arrays it lacks")
     a = p.parse_args()
     rng, pool = np.random.default_rng(a.seed), Pool(a.pool)
     out = dict(P) | play(pool, rng)
@@ -384,6 +404,12 @@ def main():
     for g, args in WALKS.items():
         out |= {f"{g}_{k}": v for k, v in walks(pool, rng, *args).items()}
     out["meta"] = json.dumps(dict(pool=a.pool.name, logic=report))
+    if a.augment:                                                       # every array of the old file, rebuilt unchanged
+        old = np.load(a.augment)
+        for k in old.files:
+            assert k == "meta" or np.array_equal(old[k], out[k]), f"{k} differs from {a.augment}"
+        out = {k: old[k] for k in old.files} | {k: v for k, v in out.items() if k not in old.files}
+        print("augment: kept", len(old.files), "arrays, added", sorted(set(out) - set(old.files)), flush=True)
     a.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(a.out, **out)
     print("saved", a.out, {k: v.shape for k, v in out.items() if k.endswith("frames")}, flush=True)

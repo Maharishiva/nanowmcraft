@@ -8,9 +8,10 @@ Every clip starts with 8 real frames and the action into each; the model generat
   logic   8 scripted actions from a real state next to something to use, in 7 families: chop, mine (with the right
           and the wrong pickaxe), drink, eat, place, craft (with and without table, furnace or ingredients, in any
           order), sleep. In each family the real game changed something in half of the cases, nothing in the rest.
-  memory  512 planned walks out and back (48 actions) and 256 long ones (144 actions): map cells seen in the context
-          that left the view and come back unchanged, on a screen tile that showed another block in the last context
-          frame.
+  memory  512 planned walks out and back (48 actions) and 256 long ones (144 actions). Recall checks: map cells seen
+          in the context that left the view and come back unchanged, on a screen tile that showed another block in the
+          last context frame. Self checks: map cells first seen in a generated frame that left the view for 4 or more
+          frames and come back unchanged, on another screen tile than the one they left from.
 
 Probes read generated frames with the game's own textures (stored in the data file): a HUD slot is the nearest of its
 10 templates (icon and digit), a map cell the nearest block or mob texture as rendered at the clip's light, sleep the
@@ -23,11 +24,18 @@ gray map tint.
            tint read the same as in the real game on all 8 generated frames. Per family: pass rate where something
            changed + pass rate where nothing changed - 1 (Youden's J; 0 for "never changes" and "always changes").
            logic = the mean over families.
-  memory   recall: the share of returning cells whose generated block reads as the real one, per gap bucket (frames
-           since the cell was last in view): 4-7, 8-15, 16-31, 32-63, 64+. Its gain over chance per bucket is
-           (recall - chance) / (1 - chance), chance = the probability that the block drawn equals a random block of
-           the last context frame; painting the common block, shuffling the context's tiles or copying the last
-           frame gains nothing. memory = the mean gain over the buckets.
+  memory   half recall, half self-consistency, each a mean over the gap buckets (frames since the cell was last in
+           view): 4-7, 8-15, 16-31, 32-63, 64+. Gain over chance per bucket = (hit rate - chance) / (1 - chance), 0
+           where chance is 1.
+           Recall: a hit when the block the model draws for a returning cell reads as the real one. Chance is the
+           probability that the drawn block equals a random block of the last context frame.
+           Self: does the model draw a cell it invented the same way when it comes back? A hit when the block drawn
+           at the return reads the same as the block the model drew for that cell when it was last in view. A check
+           is skipped if either read is a mob, or if the model drew that same block at the return's screen tile in
+           that earlier frame (a frozen picture would pass it). Chance is the probability that the block drawn at the
+           return equals the earlier block of another self check of the same clip.
+           Painting the common block, shuffling the context's tiles, copying the last frame or shifting it with the
+           actions while filling the new edge with one block or with random context blocks gains nothing.
   reward_ap / done_ap  the heads teacher-forced on the real play frames, each future frame read with 8 frames of
            context before it: average precision of |predicted reward| for the reward events and of the done
            probability for the deaths. reward_base / done_base are the shares of positives.
@@ -265,10 +273,46 @@ def score_logic(wm, model, d):
             "logic_pass_unchanged": {f: float(u) for f, (c, u) in rates.items()}}
 
 
+def read_at(gen, light, d, clip, frame, rc, chunk=8192):
+    """The tile class of map cell rc (N, 2) in generated frame gen[clip, frame], read in chunks of checks."""
+    return np.concatenate([np.zeros(0, int)] + [read_cells(gen[clip[i:i + chunk], frame[i:i + chunk]], rc[i:i + chunk],
+                                                           light[clip[i:i + chunk], frame[i:i + chunk]], d["tile_tex"],
+                                                           d["tile_night"]) for i in range(0, len(clip), chunk)])
+
+
+def self_checks(gen, light, d, sc):
+    """Self checks (clip, frame back, row, column, frame last seen, its row, its column, gap): hit, chance, gap. Skipped
+    if either read is a mob or the model drew the remembered block at the return's screen tile in the earlier frame.
+    Chance: the block drawn at the return against the earlier block of another kept check of the same clip."""
+    back = read_at(gen, light, d, sc[:, 0], sc[:, 1], sc[:, 2:4])
+    then = read_at(gen, light, d, sc[:, 0], sc[:, 4], sc[:, 5:7])
+    there = read_at(gen, light, d, sc[:, 0], sc[:, 4], sc[:, 2:4])
+    ok = (back < 16) & (then < 16) & (then != there)
+    clip, back, then, gap = sc[ok, 0], back[ok], then[ok], sc[ok, 7]
+    hit = back == then
+    _, g = np.unique(clip, return_inverse=True)
+    n, seen = np.bincount(g), np.zeros((g.max(initial=-1) + 1, 19))
+    np.add.at(seen, (g, then), 1)
+    keep = n[g] >= 2
+    chance = (seen[g, back] - hit)[keep] / (n[g][keep] - 1)
+    return hit[keep], chance, gap[keep]
+
+
+def gains(hit, chance, gap):
+    """Per gap bucket with checks: (hit rate - chance) / (1 - chance), 0 where chance is 1; hit rates; counts."""
+    bucket = np.digitize(gap, GAPS) - 1
+    names = [f"{lo}-{hi - 1}" if hi < GAPS[-1] else f"{lo}+" for lo, hi in zip(GAPS, GAPS[1:])]
+    rows = [(n, bucket == i) for i, n in enumerate(names) if (bucket == i).any()]
+    c = {n: chance[r].mean() for n, r in rows}
+    gain = {n: float((hit[r].mean() - c[n]) / (1 - c[n])) if c[n] < 1 - 1e-6 else 0.0 for n, r in rows}
+    rate = {n: float(hit[r].mean()) for n, r in rows}
+    return gain, rate, {n: float(c[n]) for n, _ in rows}, [int(r.sum()) for _, r in rows]
+
+
 def score_memory(wm, model, d):
-    """Recall of the returning cells per gap bucket, and its gain over chance: the probability that the block drawn
-    equals a random block of the clip's last context frame."""
-    hit, gap, chance = [], [], []
+    """Half recall, half self-consistency. Recall of the returning cells per gap bucket and its gain over chance: the
+    probability that the block drawn equals a random block of the clip's last context frame. Self: see self_checks."""
+    hit, gap, chance, s_hit, s_gap, s_chance = [], [], [], [], [], []
     for g in ("memory", "long"):
         gen, ch = generate(wm, model, d, g), d[f"{g}_checks"].astype(int)
         drawn = read_cells(gen[ch[:, 0], ch[:, 1]], ch[:, 2:4], d[f"{g}_light"][ch[:, 0], ch[:, 1]], d["tile_tex"],
@@ -276,13 +320,15 @@ def score_memory(wm, model, d):
         hit.append(drawn == ch[:, 4])
         gap.append(ch[:, 5])
         chance.append(d[f"{g}_prior"][ch[:, 0], drawn])
-    hit, gap, chance = map(np.concatenate, (hit, gap, chance))
-    bucket = np.digitize(gap, GAPS) - 1
-    names = [f"{lo}-{hi - 1}" if hi < GAPS[-1] else f"{lo}+" for lo, hi in zip(GAPS, GAPS[1:])]
-    rows = [(n, bucket == i) for i, n in enumerate(names) if (bucket == i).any()]
-    gain = {n: float((hit[r].mean() - chance[r].mean()) / (1 - chance[r].mean())) for n, r in rows}
-    return {"memory": float(np.mean(list(gain.values()))), "memory_gain": gain,
-            "memory_recall": {n: float(hit[r].mean()) for n, r in rows}, "memory_checks": [int(r.sum()) for _, r in rows]}
+        for out, x in zip((s_hit, s_chance, s_gap), self_checks(gen, d[f"{g}_light"], d, d[f"{g}_self"].astype(int))):
+            out.append(x)
+    gain, rate, _, n = gains(*map(np.concatenate, (hit, chance, gap)))
+    s_gain, s_rate, s_chance, s_n = gains(*map(np.concatenate, (s_hit, s_chance, s_gap)))
+    recall_part = float(np.mean(list(gain.values())))
+    self_part = float(np.mean(list(s_gain.values()))) if s_gain else 0.0
+    return {"memory": 0.5 * recall_part + 0.5 * self_part, "memory_recall_part": recall_part,
+            "memory_self_part": self_part, "memory_gain": gain, "memory_recall": rate, "memory_checks": n,
+            "memory_self_gain": s_gain, "memory_self_hit": s_rate, "memory_self_chance": s_chance, "memory_self_checks": s_n}
 
 
 def north_star(m):
@@ -306,10 +352,12 @@ def main():
     data = np.load(a.data)
     d = {k: data[k] for k in data.files if k != "meta"}
     for g in GROUPS if a.every > 1 else ():
-        n, ch = len(d[f"{g}_frames"]), d.get(f"{g}_checks")
-        d |= {k: v[::a.every] for k, v in d.items() if k.startswith(g + "_") and len(v) == n and k != f"{g}_checks"}
-        if ch is not None:
-            d[f"{g}_checks"] = ch[ch[:, 0] % a.every == 0] // [a.every, 1, 1, 1, 1, 1]
+        n, by_clip = len(d[f"{g}_frames"]), {f"{g}_checks", f"{g}_self"}
+        d |= {k: v[::a.every] for k, v in d.items() if k.startswith(g + "_") and len(v) == n and k not in by_clip}
+        for k in by_clip & d.keys():
+            v = d[k][d[k][:, 0] % a.every == 0].copy()
+            v[:, 0] //= a.every
+            d[k] = v
     start = time.perf_counter()
     wm = importlib.import_module(a.module)
     model, meta = wm.load_model(a.model), wm.load_meta(a.model)
