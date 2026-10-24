@@ -127,19 +127,28 @@ Details, the model interface and how to submit: [program.md](program.md).
 A world model learns the habits of the agents that made its data as if they were rules of the game: if the sword always comes first, it makes a sword when asked for an iron pickaxe; if iron tools always follow place furnace, it makes them whenever the last action was place furnace.
 So four RL agents play (a pixel PPO agent fine-tuned for diamonds drives most episodes), and a behaviour schedule makes their play more varied:
 
-- **Counterexamples to shortcuts:** iron pickaxes made with no sword, crafts at an old furnace, presses that fail (no table, no furnace, a missing ingredient, the wrong pickaxe), repeat placements.
-- **Deaths of every kind:** 857 in all, by zombies, skeletons, lava, thirst, starvation and exhaustion, some as whole episodes.
-- **Diamonds:** 269 first diamonds, some as a whole game from the start to the diamond.
+- **Counterexamples to shortcuts:** iron pickaxes made with no sword, crafts at an old furnace, presses that fail (no table, no furnace, a missing ingredient, the wrong pickaxe), repeat placements. The iron sword comes before the iron pickaxe in 67% of the pieces that make both; in the old data, in 190 of 190 episodes.
+- **Deaths of every kind:** 802 in all, by zombies, skeletons, lava (119; the old data had 9), thirst, starvation and exhaustion, some as whole episodes.
+- **Diamonds:** 316 (the old data had 106), 281 of them the first of an episode, some as a whole game from the start to the diamond.
 - **Return trips** for memory: about every third step of free play the agent peeks a few tiles away and back, or walks a loop of 4 to 63 tiles, so places leave the view and come back.
+- **Work in daylight:** chopping, mining, placing and crafting that work count as events too, mostly by day, so the trips do not push the work into the night.
 
 Pieces are cut only at quiet moments, never on a reward or an inventory change, and chosen so that events, not frames, are balanced; the cells that come back into view count as events too. The code is in [collect/](collect/).
+
+<p align="center">
+  <img src="docs/assets/logic_data.png" alt="Game events per 500k transitions in the old data and in this data, on a log scale, and how the frames are spent" width="640">
+</p>
+
+<p align="center"><sub>Old data and this data, per 500k transitions. Stone and iron tools are made 3-5x as often and diamonds 3x; presses that do nothing fell from a third of the frames to 4%, and the agent moves in 56% of the frames instead of 27%.</sub></p>
 
 <p align="center">
   <img src="docs/assets/border_cells.png" alt="Cells entering the view at its edge, by frames since they were last on screen, in the old data and in this data, and how often iteration 3 draws a returning cell differently than before" width="760">
 </p>
 
-<p align="center"><sub>Top two: the cells that enter the view at its edge, by how many frames ago they were last on screen. In this data 3x more of them come back within 32 frames, so memory can be learned and measured.
-Bottom: iteration 3 draws a cell that comes back after a few frames mostly as before, and one that comes back after 16+ frames no better than chance.</sub></p>
+<p align="center"><sub>Top two: the cells that enter the view at its edge, by how many frames ago they were last on screen. In this data 2.7x as many come back within 32 frames (7.1% against 2.6%), so memory can be learned and measured.
+Bottom: iteration 3 draws a cell that comes back after a few frames mostly the way it drew it before; from 32 frames on, no better than chance.</sub></p>
+
+On an earlier build of this data, with fewer return trips, the same three recipes score higher (0.338, 0.484 and 0.508), mostly on game logic. On this data they recall more: the recall half of memory is 0.133 for iteration 3, against 0.105 there.
 
 ## Evaluation
 
