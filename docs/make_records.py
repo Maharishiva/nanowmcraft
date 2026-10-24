@@ -11,8 +11,9 @@ add: the means over the three seeds (the score with its sample SD), the slowest 
 row, as row n of records.jsonl (replaced if it is there). Prints the gates against the best other row: the score
 margin 1.65 * sqrt((sd_best^2 + sd_new^2) / 3), reward AP at or above 95% of iteration 1's, train_s <= 600 and
 eval_s <= 300 for every seed, seeds 0, 1 and 2.
-render: the rows of the README's benchmark table (the columns its header names) and docs/index.html's top three,
-best score and next iteration number.
+render: the rows of the README's benchmark table (the columns its header names), docs/index.html's top three,
+best score and next iteration number, and the numbers in the rules (program.md, benchmark.html): the best score
+to beat, its eval time and the reward AP floor.
 """
 import argparse
 import json
@@ -23,6 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RECORDS, README, INDEX = ROOT / "docs" / "records.jsonl", ROOT / "README.md", ROOT / "docs" / "index.html"
+PROGRAM, BENCH = ROOT / "program.md", ROOT / "docs" / "benchmark.html"
 MEANS = ("score", "gFVD", "AF", "logic", "memory", "reward_ap", "done_ap")       # AF only while eval.py reports it
 SEED_KEYS = ("score", "gFVD", "gFVD_16", "AF", "logic", "memory", "reward_ap", "done_ap", "train_s", "eval_s")
 TRAIN_BUDGET_S, EVAL_BUDGET_S, FLOOR = 600, 300, 0.95
@@ -110,7 +112,23 @@ def render(a):
     s = re.sub(r'(<p class="np" id="np">).*?(</p>)', lambda m: f'{m[1]}now playing: <a href="{top[0]["code"]}">iteration '
                f'{top[0]["n"]}</a> by {CROWN}{who(top[0])}{m[2]}', s, count=1)
     INDEX.write_text(s)
-    print(f"README table: {len(recs)} rows; index.html: best {top[0]['score']:.3f} (iteration {top[0]['n']})")
+    # the numbers in the rules: the best score to beat, its eval time, the reward AP floor (95% of iteration 1)
+    best, floor = top[0], FLOOR * next(r for r in recs if r["n"] == 1)["reward_ap"]
+    subs = {PROGRAM: [(r"(The goal: a higher score than the best so far \(iteration )\d+, [\d.]+ ± [\d.]+",
+                       rf"\g<1>{best['n']}, {best['score']:.3f} ± {best['score_sd']:.3f}"),
+                      (r"iteration \d+ takes about \d+ s", f"iteration {best['n']} takes about {best['eval_s']:.0f} s"),
+                      (r"(\| reward_ap \|\n\|---:\|\n\| )[\d.]+", rf"\g<1>{floor:.3f}")],
+            BENCH: [(r"reward AP ≥ [\d.]+", f"reward AP ≥ {floor:.3f}"),
+                    (r"\(iteration \d+: about \d+ s\)", f"(iteration {best['n']}: about {best['eval_s']:.0f} s)")]}
+    for path, rules in subs.items():
+        s = path.read_text()
+        for pat, rep in rules:
+            s, k = re.subn(pat, rep, s, count=1)
+            if not k:
+                print(f"note: no match for {pat!r} in {path.name}")
+        path.write_text(s)
+    print(f"README table: {len(recs)} rows; index.html: best {best['score']:.3f} (iteration {best['n']}); "
+          f"program.md and benchmark.html: reward AP floor {floor:.3f}, eval about {best['eval_s']:.0f} s")
 
 
 def main():
