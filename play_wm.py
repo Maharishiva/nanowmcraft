@@ -46,7 +46,11 @@ def make_env():
 
 
 def recon_of(model, obs_u8):
-    return np.asarray(M.decode(model, M.encode(model, jnp.asarray(obs_u8)[None])))[0]
+    """The tokenizer's reconstruction of a real frame: the module's encode and decode, or the model's tokenizer (tok)."""
+    x = jnp.asarray(obs_u8)[None]
+    img = M.decode(model, M.encode(model, x)) if hasattr(M, "encode") else model.tok.decode(model.tok.encode(x))
+    img = np.asarray(img)[0]
+    return img if img.dtype == np.uint8 else np.round(np.clip(img, 0, 1) * 255).astype(np.uint8)
 
 
 class WM:
@@ -213,5 +217,5 @@ if __name__ == "__main__":
     if hasattr(M, "CDT"):                  # train.py: fp32 on CPU (params are fp32; bf16 is GPU-only)
         M.CDT = jnp.float32
         M.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
-    a.recon = a.recon and hasattr(M, "encode")   # the tokenizer pane needs encode and decode
+    a.recon = a.recon and (hasattr(M, "encode") or hasattr(M, "Tokenizer"))   # the tokenizer pane needs a tokenizer
     (selftest if a.selftest else run)(a)
