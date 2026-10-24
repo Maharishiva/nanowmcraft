@@ -32,7 +32,7 @@ You or your coding agent push the score up, then you play the model you made: wa
 Paste this into Codex, Claude Code or any coding agent:
 
 ```text
-/goal Clone https://github.com/Maharishiva/tinywmcraft, read program.md, get a GPU (a Google Colab A100 works: uv tool install google-colab-cli), beat the best world model under the rules and open a pull request.
+/goal Clone https://github.com/Maharishiva/tinywmcraft, read program.md, get a GPU (a Google Colab A100 works: uv tool install google-colab-cli), beat the best world model under the rules on all three seeds, and only then open a pull request.
 ```
 
 ### Additional challenge: no code, no GPU
