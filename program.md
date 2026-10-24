@@ -3,7 +3,7 @@
 How to beat tinywmcraft, for people and for coding agents.
 
 The goal: a higher score than the best so far (iteration 3, {SCORE_IT3} ± {SD_IT3}) from one 10-minute A100 run, without making the reward head worse.
-The score is the mean of three parts, each 0 for a trivial model and 1 for the real game: gFVD, game logic and memory ([README](README.md#evaluation)).
+The score is 0.25 gFVD + 0.25 game logic + 0.25 memory + 0.125 reward + 0.125 done, each part 0 for a trivial model and 1 for the real game ([README](README.md#evaluation)).
 Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
 
 ## Rules
@@ -16,11 +16,12 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 - **Gates.** Measured in the maintainer's rerun, on the same machine and seeds, on a private test set: clips built by `make_eval.py` in the same way from worlds that are not in `eval.npz`. Ranked on the score alone:
   - score: the new mean minus the best mean must exceed `1.65 * sqrt((sd_best^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. Stable recipes need a smaller margin.
   - reward AP: the new three-seed mean stays at or above a fixed floor, 95% of iteration 1's mean (`train_tiny.py`). The floor does not move when the best changes.
-  - done AP: reported, not gated. Deaths are rare (about 180 of the 2048 play clips), so it is too noisy to gate on.
+  - done AP: the new three-seed mean stays at or above a fixed floor of 0.15.
+  - `eval.py` marks each run: `gates` and `eligible` (both gates passed, in budget). A run that fails is not eligible; its score is still reported.
 
-| reward_ap |
-|---:|
-| {REWARD_AP_FLOOR} |
+| reward_ap | done_ap |
+|---:|---:|
+| {REWARD_AP_FLOOR} | 0.15 |
 
 One run is noisy: compare three-seed means, never single runs.
 

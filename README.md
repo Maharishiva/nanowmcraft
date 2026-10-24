@@ -66,11 +66,11 @@ No game state, tile labels or pretrained features enter the model.
 
 ## Benchmark
 
-| # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | train s | code | checkpoints |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | {SCORE_IT1} ± {SD_IT1} | {GFVD_IT1} | {LOGIC_IT1} | {MEMORY_IT1} | {RAP_IT1} | {TRAIN_S_IT1} | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
-| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | {SCORE_IT2} ± {SD_IT2} | {GFVD_IT2} | {LOGIC_IT2} | {MEMORY_IT2} | {RAP_IT2} | {TRAIN_S_IT2} | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
-| 3 | [train.py](train.py): a tokenizer trained on clean, masked and noised frames, flow matching with a shortcut loss, Muon, two fused kernels, half the windows start a game | {SCORE_IT3} ± {SD_IT3} | {GFVD_IT3} | {LOGIC_IT3} | {MEMORY_IT3} | {RAP_IT3} | {TRAIN_S_IT3} | [{COMMIT_IT3}](https://github.com/Maharishiva/tinywmcraft/blob/{COMMIT_IT3}/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
+| # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | done AP ↑ | train s | code | checkpoints |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | {SCORE_IT1} ± {SD_IT1} | {GFVD_IT1} | {LOGIC_IT1} | {MEMORY_IT1} | {RAP_IT1} | {DONE_AP_IT1} | {TRAIN_S_IT1} | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
+| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | {SCORE_IT2} ± {SD_IT2} | {GFVD_IT2} | {LOGIC_IT2} | {MEMORY_IT2} | {RAP_IT2} | {DONE_AP_IT2} | {TRAIN_S_IT2} | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
+| 3 | [train.py](train.py): a tokenizer trained on clean, masked and noised frames, flow matching with a shortcut loss, Muon, two fused kernels, half the windows start a game | {SCORE_IT3} ± {SD_IT3} | {GFVD_IT3} | {LOGIC_IT3} | {MEMORY_IT3} | {RAP_IT3} | {DONE_AP_IT3} | {TRAIN_S_IT3} | [{COMMIT_IT3}](https://github.com/Maharishiva/tinywmcraft/blob/{COMMIT_IT3}/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
 
 Three snapshots of our own research so far, each trained on the benchmark data. Score: the north star, 0 for a trivial model and 1 for the real game ([evaluation](#evaluation)); gFVD shown times 10^4.
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py` on the public eval clips; train s is the slowest seed.
@@ -105,7 +105,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # abo
 - **Compute:** at most 600 s per training run on one A100 40GB, everything included, with no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical and its timed part (`eval_s`: importing and loading your model, compiling, generating) takes at most 300 s on the same GPU. Any model, any sampler and any context length, as long as it generates one frame per action without seeing future actions.
 - **Seeds:** report training seeds 0, 1 and 2.
-- **Gates:** the mean score beats the best by a noise-aware margin; reward AP stays above a fixed floor, 95% of iteration 1; done AP is reported, not gated. Ranked on the score alone, measured on a private test set built the same way from other worlds.
+- **Gates:** the mean score beats the best by a noise-aware margin; reward AP stays above a fixed floor, 95% of iteration 1; done AP stays at or above 0.15. Ranked on the score alone, measured on a private test set built the same way from other worlds.
 
 Details, the model interface and how to submit: [program.md](program.md).
 
@@ -149,8 +149,8 @@ Probes read the generated frames with the game's own textures: HUD digits, map c
 - **Play:** 2048 clips of 64 actions, 512 of them with a rare event early on (a diamond, an iron tool, eating a plant, a death). **gFVD ↓** is the Fréchet distance between real and generated frames in a fixed random CNN's feature space, times 10^4 (not comparable to I3D FVD).
 - **Logic ↑:** eight scripted actions from a real state next to something to use, in seven families: chop, mine, drink, eat, place, craft, sleep, with and without the right tool, table, furnace or ingredients, crafts in any order. A case passes if the HUD and the target cell match the real game on all eight frames. Per family, the pass rate where the game changed something plus the pass rate where it did not, minus 1.
 - **Memory ↑:** walks out and back (48 and 144 actions), half recall and half self-consistency, each in gap buckets from 4-7 to 64+ frames. Recall: map cells seen in the context come back into view; the share drawn as the real block, scored as a gain over drawing a random block of the last context frame. Self-consistency: cells the model first drew itself leave the view and come back on another screen tile; the share drawn the same way as before, scored as a gain over the earlier drawing of another such cell in the same clip.
-- **Score ↑** (the headline): the mean of three parts, each clipped to [0, 1]. gFVD on a log scale from copying the last frame (170, scores 0) to the real game replayed with fresh randomness (14, scores 1); logic; memory. Copying the last frame, shuffling its tiles, ignoring the actions or shifting the last frame with them all score 0.
-- **reward AP ↑ and done AP ↑:** average precision of the reward and episode-end heads on real transitions.
+- **Score ↑** (the headline): 0.25 gFVD + 0.25 logic + 0.25 memory + 0.125 reward + 0.125 done, each part clipped to [0, 1]. gFVD on a log scale from copying the last frame (170, scores 0) to the real game replayed with fresh randomness (14, scores 1); logic; memory; reward and done as the AP's gain over its base rate, (AP - base) / (1 - base). Copying the last frame, shuffling its tiles, shifting it with the actions, or a model fed no or random actions all score 0 on gFVD, logic and memory; only a trained reward and done head adds to theirs. The weighted geometric mean of the same parts is logged as `score_geometric` for comparison; the ranking uses the score.
+- **reward AP ↑ and done AP ↑:** average precision of the reward and episode-end heads on real transitions; the base rates are logged next to them.
 
 A private test set, built the same way from other worlds, judges submissions; the public `eval.npz` is for development.
 

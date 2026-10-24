@@ -36,10 +36,14 @@ gray map tint.
   reward_ap / done_ap  the heads teacher-forced on the real play frames, each future frame read with 8 frames of
            context before it: average precision of |predicted reward| for the reward events and of the done
            probability for the deaths. reward_base / done_base are the shares of positives.
-  score    the north star, the mean of three parts, each clipped to [0, 1], 0 at a trivial model and 1 at the real
-           game: gFVD log(GFVD_ZERO / gFVD) / log(GFVD_ZERO / GFVD_ONE), logic, memory. GFVD_ZERO is the gFVD of
-           copying the last context frame; GFVD_ONE is the gFVD of the real game itself, replayed from the same states
-           with fresh randomness (mobs, saplings, night).
+  score    the north star: 0.25 gFVD + 0.25 logic + 0.25 memory + 0.125 reward + 0.125 done, each part clipped to
+           [0, 1], 0 at a trivial model and 1 at the real game. gFVD part: log(GFVD_ZERO / gFVD) / log(GFVD_ZERO /
+           GFVD_ONE); GFVD_ZERO is the gFVD of copying the last context frame, GFVD_ONE the gFVD of the real game
+           itself, replayed from the same states with fresh randomness (mobs, saplings, night). Reward and done parts:
+           the AP's gain over its base rate, (AP - base) / (1 - base). score_geometric, the weighted geometric mean of
+           the same parts (each at least 1e-3), is reported for comparison and not ranked.
+  gates    reward AP at least REWARD_AP_FLOOR (95% of iteration 1's), done AP at least DONE_AP_FLOOR. A run below
+           either, or over the time budget, is not eligible; its score is reported as it is.
 
 The model is any module (default train.py) with this interface; how it generates a frame is its own business, and
 so is how much of the past it keeps:
@@ -71,6 +75,8 @@ EVAL_SEED, BATCH, FEAT_BATCH, PROBE_BATCH = 0, 256, 16, 2048
 CLIP, FEAT_SEED = 4, 1234
 GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 300
 GFVD_ZERO, GFVD_ONE = 170.0, 14.0                  # measured on data/eval.npz (copy, replayed game)
+WEIGHTS = {"gfvd": 0.25, "logic": 0.25, "memory": 0.25, "reward": 0.125, "done": 0.125}
+REWARD_AP_FLOOR, DONE_AP_FLOOR = 0.877, 0.15
 GAPS = (4, 8, 16, 32, 64, 10 ** 4)
 GROUPS = ("play", "logic", "memory", "long")
 
@@ -314,10 +320,14 @@ def score_memory(wm, model, d):
 
 
 def north_star(m):
+    """The score, the weighted geometric mean of the same parts (for comparison), the parts."""
+    gain = lambda ap, base: 0.0 if ap is None else (ap - base) / (1 - base)
     parts = {"gfvd": np.log(GFVD_ZERO / max(m["gFVD"], 1e-9)) / np.log(GFVD_ZERO / GFVD_ONE), "logic": m["logic"],
-             "memory": m["memory"]}
+             "memory": m["memory"], "reward": gain(m["reward_ap"], m["reward_base"]),
+             "done": gain(m["done_ap"], m["done_base"])}
     parts = {k: float(np.clip(v, 0, 1)) for k, v in parts.items()}
-    return float(np.mean(list(parts.values()))), parts
+    geometric = np.exp(sum(WEIGHTS[k] * np.log(max(v, 1e-3)) for k, v in parts.items()))
+    return float(sum(WEIGHTS[k] * v for k, v in parts.items())), float(geometric), parts
 
 
 def main():
@@ -345,13 +355,16 @@ def main():
     model, meta = wm.load_model(a.model), wm.load_meta(a.model)
     metrics, preview = score_play(wm, model, d)
     metrics |= score_logic(wm, model, d) | score_memory(wm, model, d)
-    score, parts = north_star(metrics)
+    score, geometric, parts = north_star(metrics)
     eval_s = round(time.perf_counter() - start, 1)
     clips = {g: len(d[f"{g}_frames"]) for g in GROUPS}
+    gates = {"reward_ap": (metrics["reward_ap"] or 0) >= REWARD_AP_FLOOR,
+             "done_ap": (metrics["done_ap"] or 0) >= DONE_AP_FLOOR}
+    in_budget = a.every == 1 and meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tag": a.tag or a.model.parent.name,
-           "note": a.note, "score": score, "parts": parts, **metrics, "train_seed": meta["cfg"]["seed"], "clips": clips,
-           "batch": BATCH, "train_s": meta["train_s"], "eval_s": eval_s,
-           "in_budget": a.every == 1 and meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S,
+           "note": a.note, "score": score, "score_geometric": geometric, "parts": parts, **metrics,
+           "train_seed": meta["cfg"]["seed"], "clips": clips, "batch": BATCH, "train_s": meta["train_s"], "eval_s": eval_s,
+           "in_budget": in_budget, "gates": gates, "eligible": in_budget and all(gates.values()),
            "module": a.module, "checkpoint": str(a.model), "data": str(a.data)}
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open("a") as fh:
