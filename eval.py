@@ -130,10 +130,12 @@ def frechet(fr, fg):
 def average_precision(scores, labels):
     """Area under the stepwise precision-recall curve, grouping tied scores; None without a positive.
     A constant score gets the base rate."""
+    scores = np.asarray(scores, np.float64).ravel()
     hits = np.asarray(labels).ravel() > 0.5
+    if scores.shape != hits.shape or not np.isfinite(scores).all():
+        raise ValueError("head scores must be finite and match the labels")
     if not hits.any():
         return None
-    scores = np.asarray(scores, np.float64).ravel()
     order = np.argsort(-scores, kind="stable")
     scores, hits = scores[order], hits[order]
     ends = np.r_[np.flatnonzero(scores[1:] != scores[:-1]), len(scores) - 1]
@@ -192,7 +194,10 @@ def rollout(wm, model, context, context_actions, actions, keys):
     for action, key in zip(actions.T, keys):
         frame, state = wm.step(model, state, jnp.asarray(action), key)
         out.append(frame)
-    return np.asarray(jnp.stack(out, 1))
+    out = np.asarray(jnp.stack(out, 1))
+    if out.shape != (len(context), actions.shape[1], H, W, 3) or out.dtype != np.uint8:
+        raise ValueError("step must return one uint8 frame (B, 63, 63, 3) per action")
+    return out
 
 
 def batches(d, g):
@@ -212,7 +217,11 @@ def read_heads(wm, model, frames, actions, key):
     for w, s in enumerate(range(0, FUT, HEAD_HOR)):
         window = slice(s, s + CTX + HEAD_HOR)
         r, d = wm.heads(model, frames[:, window], actions[:, window], jax.random.fold_in(key, w))
-        reward[:, s:s + HEAD_HOR], done[:, s:s + HEAD_HOR] = np.asarray(r)[:, CTX:], np.asarray(d)[:, CTX:]
+        r, d = np.asarray(r), np.asarray(d)
+        if r.shape != actions[:, window].shape or d.shape != r.shape or not np.isfinite(r).all() \
+                or not np.isfinite(d).all() or ((d < 0) | (d > 1)).any() or (d[:, 0] != 0).any():
+            raise ValueError("heads must return finite (B, 24) arrays, with done in [0, 1] and done[:, 0] = 0")
+        reward[:, s:s + HEAD_HOR], done[:, s:s + HEAD_HOR] = r[:, CTX:], d[:, CTX:]
     return reward, done
 
 
@@ -325,7 +334,7 @@ def score_memory(wm, model, d):
             out.append(x)
     gain, rate, _, n = gains(*map(np.concatenate, (hit, chance, gap)))
     s_gain, s_rate, s_chance, s_n = gains(*map(np.concatenate, (s_hit, s_chance, s_gap)))
-    recall_part = float(np.mean(list(gain.values())))
+    recall_part = float(np.mean(list(gain.values()))) if gain else 0.0
     self_part = float(np.mean(list(s_gain.values()))) if s_gain else 0.0
     return {"memory": 0.5 * recall_part + 0.5 * self_part, "memory_recall_part": recall_part,
             "memory_self_part": self_part, "memory_gain": gain, "memory_recall": rate, "memory_checks": n,
@@ -334,10 +343,12 @@ def score_memory(wm, model, d):
 
 def north_star(m):
     """The score, the weighted geometric mean of the same parts (for comparison), the parts."""
-    gain = lambda ap, base: 0.0 if ap is None else (ap - base) / (1 - base)
+    gain = lambda ap, base: 0.0 if ap is None or base == 1 else (ap - base) / (1 - base)
     parts = {"gfvd": np.log(GFVD_ZERO / max(m["gFVD"], 1e-9)) / np.log(GFVD_ZERO / GFVD_ONE), "logic": m["logic"],
              "memory": m["memory"], "reward": gain(m["reward_ap"], m["reward_base"]),
              "done": gain(m["done_ap"], m["done_base"])}
+    if not all(np.isfinite(v) for v in parts.values()):
+        raise ValueError("score parts must be finite")
     parts = {k: float(np.clip(v, 0, 1)) for k, v in parts.items()}
     geometric = np.exp(sum(WEIGHTS[k] * np.log(max(v, 1e-3)) for k, v in parts.items()))
     return float(sum(WEIGHTS[k] * v for k, v in parts.items())), float(geometric), parts
@@ -354,6 +365,8 @@ def main():
     p.add_argument("--every", type=int, default=1, help="score every k-th clip of each group, a quick check")
     p.add_argument("--gif", action="store_true")
     a = p.parse_args()
+    if a.every < 1:
+        p.error("--every must be positive")
     data = np.load(a.data)
     d = {k: data[k] for k in data.files if k != "meta"}
     for g in GROUPS if a.every > 1 else ():
@@ -366,6 +379,8 @@ def main():
     start = time.perf_counter()
     wm = importlib.import_module(a.module)
     model, meta = wm.load_model(a.model), wm.load_meta(a.model)
+    if not np.isfinite(meta["train_s"]) or meta["train_s"] < 0:
+        raise ValueError("train_s must be finite and nonnegative")
     metrics, preview = score_play(wm, model, d)
     metrics |= score_logic(wm, model, d) | score_memory(wm, model, d)
     score, geometric, parts = north_star(metrics)
