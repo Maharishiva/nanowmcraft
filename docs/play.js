@@ -13,10 +13,10 @@ const GITHUB = 'github.com/Maharishiva/tinywmcraft';
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
-// The model the site plays: made by export_web.py and convert_web.py --int8 from the best checkpoint (the slot graph,
-// inputs pos, prev, kmask; int8 matmul and conv weights, 12 MB instead of 23), pinned by pin_web.py at a revision so the
-// cached copy stays valid, sha256 9eccfecf.
-const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft/resolve/0c96165fbfe3b0303fcaee69ef569f16f4c8618f/web/play_int8.wgr';
+// The model the site plays: made by export_web.py and convert_web.py from the best checkpoint (the slot graph, inputs
+// pos, prev, kmask; fp16 weights, 23 MB; convert_web.py --int8 makes a 12 MB file that scores the same), pinned by
+// pin_web.py at a revision so the cached copy stays valid, sha256 f75bfe69.
+const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/7952f3107adbaa8b3ddc9ff3dadce4bccbedeb65/web/play.wgr';
 const q = new URLSearchParams(location.search);
 // ?model= loads another file; served from this machine, it plays docs/play.wgr, fetched fresh every time
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
@@ -37,7 +37,7 @@ const REROLL = 20;                             // imagined first frames tried at
 // nothing held, a tree two tiles away over open grass, the walkthrough done in about 5 steps (walk, chop, chop, table).
 // A seed gives another world with every model file: pick it with seeds.html from the first frames of 1500 seeds, and
 // pin_web.py writes it here with the file.
-const TUT_SEED = 602;
+const TUT_SEED = 1232;
 const TUT = q.get('tut'), LOOK = TUT === 'b' ? 'b' : 'a';
 const SLEEP_MAX = 400;                         // steps skipped in one sleep at most
 const SLEEP_STEP_MS = 60, SLEEP_SHOW_MS = 1500; // skipped steps at most ~16 a second; the sleep banner stays at least 1.5 s
