@@ -64,7 +64,7 @@ No game state, tile labels or pretrained features enter the model.
 | [make_eval.py](make_eval.py) | builds the eval clips from held-out play |
 | [collect/](collect/) | the data collector: agents, the behaviour schedule, return trips and the packer |
 | [play_wm.py](play_wm.py) | play inside a trained model with your keyboard |
-| [train_tiny.py](train_tiny.py) | iteration 1, the whole model on one page: about 250 lines, no custom kernels |
+| [train_tiny.py](train_tiny.py) | the whole model on one page, for reading: 178 lines, no custom kernels (not a benchmark entry, see below) |
 | [program.md](program.md) | rules, the model interface, and how to submit, for people and for coding agents |
 | [CHALLENGE.md](CHALLENGE.md) | the no-code challenge: what counts as a diamond, how to submit a clip, how it is checked |
 
@@ -72,13 +72,15 @@ No game state, tile labels or pretrained features enter the model.
 
 | # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | done AP ↑ | train s | code | checkpoints |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | [train_tiny.py](train_tiny.py): the whole model in one file, no custom kernels | 0.270 ± 0.031 | 65.9 | 0.01 | 0.063 | 0.928 | 0.248 | 559 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
+| 1 | the whole model in one file, no custom kernels | 0.270 ± 0.031 | 65.9 | 0.01 | 0.063 | 0.928 | 0.248 | 559 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
 | 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.443 ± 0.013 | 44.3 | 0.55 | 0.087 | 0.934 | 0.247 | 582 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
 | 3 | [train.py](train.py): a tokenizer trained on clean, masked and noised frames, flow matching with a shortcut loss, Muon, two fused kernels, an eighth of the windows start a game | 0.518 ± 0.010 | 27.2 | 0.69 | 0.087 | 0.929 | 0.190 | 571 | [8538aa5](https://github.com/Maharishiva/tinywmcraft/blob/8538aa5/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
 
 Three snapshots of our own research so far, each trained on the benchmark data. Score: the north star, 0 for a trivial model and 1 for the real game ([evaluation](#evaluation)); gFVD shown times 10^4.
 Mean ± sample SD over training seeds 0, 1 and 2, each trained cold on one Colab A100-SXM4-40GB and scored by `eval.py` on the public eval clips; train s is the slowest seed.
 Beat iteration 3 and yours is iteration 4: the crown goes next to your GitHub login, and the browser player switches to your model. How: [program.md](program.md). The same table on the site, with the score over time: [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
+
+[train_tiny.py](train_tiny.py) is a separate, minimal version for reading, not a benchmark entry: the whole model in 178 lines. Over seeds 0, 1 and 2 on the same A100 it scores 0.266 ± 0.023 (gFVD 67.1, logic 0.03, memory 0.058, reward AP 0.918, done AP 0.272), about what iteration 1 scores with 249 lines.
 
 ## Quickstart
 
