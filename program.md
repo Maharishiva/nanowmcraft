@@ -9,10 +9,13 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 ## Rules
 
 - **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
-- **Training.** At most 600 s per run on one A100 40GB: data loading, tokenizer, compilation, everything. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint.
-- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 300 s on the same GPU; iteration 3 takes about 146 s. Anything else about generation is yours: the model family, the sampler, the number of steps, how much of the past the model keeps.
-- **One frame per action.** The model generates frame by frame and never sees future actions or frames. The interface below hands it one action at a time; reading the eval data, caching frames across calls or other tricks around it are against the rules and checked in review.
-- **Seeds.** Training seeds 0, 1 and 2. Report all three rows.
+- **Learned, not written.** Everything the model knows about the game is fitted from `train.npz` in the training run: no game engine or game code, no hand-written rules or state parsers, no textures, labels or tables from the game or from `eval.py`. Learned tokenizers, codebooks and statistics are fine. Replaying stored training clips at eval time is not, and neither is a generator with nothing fitted (copying, looping or tiling the context frames).
+- **The evaluator is not a loss.** `eval.py`'s feature network, probes and their outputs stay out of training and inference.
+- **Training.** At most 600 s per run on one A100 40GB, in a fresh process: imports, data loading, tokenizer, compilation, everything up to the written checkpoint. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint; the maintainer also times the whole process.
+- **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 300 s on the same GPU, in a fresh process without a persistent compilation cache; iteration 3 takes about 146 s. Anything else about generation is yours: the model family, the sampler, the number of steps, how much of the past the model keeps.
+- **One frame per action, one clip at a time.** The model generates frame by frame and never sees future actions or frames. Only the state that `start` and `step` return carries a clip's past; nothing passes between clips, batch rows, head windows or runs. Inputs are read-only. Reading the eval data, patching the evaluator, or telling test cases apart by batch position, call order or keys is against the rules and checked in review.
+- **Causal heads.** In `heads`, reward at frame `t` may use frames and actions up to `t`; done at `t` may use frames before `t` and actions up to `t`, as in both reference models. The whole window comes at once only so the heads can run in parallel.
+- **Seeds.** Training seeds 0, 1 and 2 of one recipe: the seed changes the randomness, never the code or the hyperparameters. Report all three rows.
 - **Gates.** Measured in the maintainer's rerun, on the same machine and seeds, on a private test set: clips built by `make_eval.py` in the same way from worlds that are not in `eval.npz`. Ranked on the score alone:
   - score: the new mean minus the best mean must exceed `1.65 * sqrt((sd_best^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. Stable recipes need a smaller margin.
   - reward AP: the new three-seed mean stays at or above a fixed floor, 95% of iteration 1's mean (`train_tiny.py`). The floor does not move when the best changes.
@@ -24,6 +27,8 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 | 0.881 | 0.15 |
 
 One run is noisy: compare three-seed means, never single runs.
+
+What the parts do not check: gFVD compares the spread of four-frame features, not whether the frames follow the actions (looping the context frames earns part of it, hence the rule above); logic reads the inventory, food, drink, the target cell and the sleep tint, not health or energy; the heads are scored on how they rank events, not on the sign or size of the reward or on calibration.
 
 ## The model interface
 
