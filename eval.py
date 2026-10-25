@@ -28,10 +28,10 @@ gray map tint.
            probability that a random block of the last context frame equals the real returning block.
            Self: does the model draw a cell it invented the same way when it comes back? A hit when the block drawn
            at the return reads the same as the block the model drew for that cell when it was last in view. A check
-           fails if either read is a mob, or if the model drew that same block at the return's screen tile in
-           that earlier frame (a frozen picture would pass it). Chance is the probability that the block drawn at the
-           return equals the earlier block of another self check of the same clip. The real frames select checks
-           whose two earlier screen tiles differ, so the set of checks does not depend on the model.
+           is skipped if that earlier read is a mob or if the model drew that same block at the return's screen tile
+           in that earlier frame (a frozen picture would pass it); a mob drawn at the return is a miss. Chance is the
+           probability that the block drawn at the return equals the earlier block of another self check of the
+           same clip.
            Painting the common block, shuffling the context's tiles, copying the last frame or shifting it with the
            actions while filling the new edge with one block or with random context blocks gains nothing.
   reward_ap / done_ap  the heads teacher-forced on the real play frames, each future frame read with 8 frames of
@@ -285,26 +285,23 @@ def read_at(gen, light, d, clip, frame, rc, chunk=8192):
                                                            d["tile_night"]) for i in range(0, len(clip), chunk)])
 
 
-def self_checks(gen, light, d, sc, real):
-    """Self checks (clip, frame back, row, column, frame last seen, its row, its column, gap): hit, chance, gap. Failed
-    if either read is a mob or the model drew the remembered block at the return's screen tile in the earlier frame.
-    The real frames select distinguishable cells before any model reads. Chance: the block drawn at the return
-    against the earlier block of another check of the same clip."""
-    last = read_at(real, light, d, sc[:, 0], sc[:, 4], sc[:, 5:7])
-    there = read_at(real, light, d, sc[:, 0], sc[:, 4], sc[:, 2:4])
-    sc = sc[last != there]
+def self_checks(gen, light, d, sc):
+    """Self checks (clip, frame back, row, column, frame last seen, its row, its column, gap): hit, chance, gap. Skipped
+    if the model's earlier read is a mob or it drew the remembered block at the return's screen tile in that earlier
+    frame (a frozen picture would pass it), so the earlier frame, drawn before the return, picks the checks; a mob
+    drawn at the return is a miss. Chance: the block drawn at the return against the earlier block of another kept
+    check of the same clip."""
     back = read_at(gen, light, d, sc[:, 0], sc[:, 1], sc[:, 2:4])
     then = read_at(gen, light, d, sc[:, 0], sc[:, 4], sc[:, 5:7])
     there = read_at(gen, light, d, sc[:, 0], sc[:, 4], sc[:, 2:4])
-    ok = (back < 16) & (then < 16) & (then != there)
-    clip, gap = sc[:, 0], sc[:, 7]
-    match = back == then
-    hit = match & ok
+    ok = (then < 16) & (then != there)
+    clip, back, then, gap = sc[ok, 0], back[ok], then[ok], sc[ok, 7]
+    hit = back == then
     _, g = np.unique(clip, return_inverse=True)
     n, seen = np.bincount(g), np.zeros((g.max(initial=-1) + 1, 19))
     np.add.at(seen, (g, then), 1)
     keep = n[g] >= 2
-    chance = (seen[g, back] - match)[keep] / (n[g][keep] - 1)
+    chance = (seen[g, back] - hit)[keep] / (n[g][keep] - 1)
     return hit[keep], chance, gap[keep]
 
 
@@ -330,8 +327,7 @@ def score_memory(wm, model, d):
         hit.append(drawn == ch[:, 4])
         gap.append(ch[:, 5])
         chance.append(d[f"{g}_prior"][ch[:, 0], ch[:, 4]])
-        for out, x in zip((s_hit, s_chance, s_gap), self_checks(gen, d[f"{g}_light"], d, d[f"{g}_self"].astype(int),
-                                                            d[f"{g}_frames"][:, CTX:])):
+        for out, x in zip((s_hit, s_chance, s_gap), self_checks(gen, d[f"{g}_light"], d, d[f"{g}_self"].astype(int))):
             out.append(x)
     gain, rate, _, n = gains(*map(np.concatenate, (hit, chance, gap)))
     s_gain, s_rate, s_chance, s_n = gains(*map(np.concatenate, (s_hit, s_chance, s_gap)))
