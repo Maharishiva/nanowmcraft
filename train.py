@@ -3,8 +3,8 @@
 with spatial attention in frames, causal attention across them and adaLN-zero on the action and each frame's noise
 level (diffusion forcing) predicts the next latent by flow matching, with reward and episode-end heads. Also: the
 tokenizer learns from masked and noised frames too; a shortcut loss (told the step size, one Euler step learns to land
-where two half steps land); the heads' gradient into the trunk is cut to a tenth in the second half; half the windows
-start a game; Muon; Pallas kernels (kernels.py). Trains in ten minutes on one A100.
+where two half steps land); the heads' gradient into the trunk is cut to a tenth in the second half; an eighth of the
+windows start a game; Muon; Pallas kernels (kernels.py). Trains in ten minutes on one A100.
 
     python train.py --data data/train.npz --out runs/base/model.npz --seed 0
 """
@@ -235,14 +235,14 @@ def shortcut_loss(wm, z, a, valid, key):
 
 def wm_loss(wm, data, key, step, batch, steps):
     """Flow matching on windows at independent per-frame signal levels, weighted up with the signal, plus the heads on
-    the same pass; half the windows start a game; frames after an episode end are masked out; a truncation is no
+    the same pass; an eighth of the windows start a game; frames after an episode end are masked out; a truncation is no
     death. Every 4th step after the first quarter adds the shortcut loss; the heads' gradient into the trunk is cut
     to a tenth in the second half."""
     Z, A, R, Dn, Tr, starts = data
     kt, ks, kn, kd, kp, kq, kc = jax.random.split(key, 7)
     rand = jax.random.randint(kt, (batch, 2), 0, jnp.array([Z.shape[0] - WIN + 1, Z.shape[1]]))
     first = starts[jax.random.randint(kp, (batch,), 0, len(starts))]
-    t, e = jnp.where(jax.random.bernoulli(kq, 0.5, (batch, 1)), first, rand).T
+    t, e = jnp.where(jax.random.bernoulli(kq, 0.125, (batch, 1)), first, rand).T
     i = t[:, None] + jnp.arange(WIN)
     z, a, r, d, tr = Z[i, e[:, None]], A[i, e[:, None]], R[i, e[:, None]], Dn[i, e[:, None]], Tr[i, e[:, None]]
     a, r = (v.at[:, 0].set(jnp.where(d[:, 0] > 0, 0, v[:, 0])) for v in (a, r))
