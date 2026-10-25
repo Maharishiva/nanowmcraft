@@ -71,6 +71,7 @@ class WM:
 
 def load_all(args):
     models = [M.load_model(p) for p in args.model]
+    args.recon = args.recon and (hasattr(M, "encode") or hasattr(models[0], "tok"))   # no tokenizer to show, no pane
     labels = args.labels or [p.parent.name for p in args.model]
     return models, labels, [WM(m) for m in models]
 
