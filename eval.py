@@ -101,7 +101,8 @@ class FeatCNN(nnx.Module):
 def frame_features():
     """A function from frames (B, T, H, W, 3) uint8 to features (B, T, F): for every frame, the stack of CLIP frames
     ending at it (the first frame repeated before the start) through the fixed CNN, on the device."""
-    cnn = FeatCNN(nnx.Rngs(FEAT_SEED))
+    with jax.threefry_partitionable(True):
+        cnn = FeatCNN(nnx.Rngs(jax.random.key(FEAT_SEED, impl="threefry2x32")))
 
     @nnx.jit
     def run(cnn, video):
