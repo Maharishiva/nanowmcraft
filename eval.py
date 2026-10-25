@@ -25,7 +25,7 @@ gray map tint.
            view): 4-7, 8-15, 16-31, 32-63, 64+. Gain over chance per bucket = (hit rate - chance) / (1 - chance), 0
            where chance is 1.
            Recall: a hit when the block the model draws for a returning cell reads as the real one. Chance is the
-           probability that the drawn block equals a random block of the last context frame.
+           probability that a random block of the last context frame equals the real returning block.
            Self: does the model draw a cell it invented the same way when it comes back? A hit when the block drawn
            at the return reads the same as the block the model drew for that cell when it was last in view. A check
            is skipped if either read is a mob, or if the model drew that same block at the return's screen tile in
@@ -305,7 +305,7 @@ def gains(hit, chance, gap):
 
 def score_memory(wm, model, d):
     """Half recall, half self-consistency. Recall of the returning cells per gap bucket and its gain over chance: the
-    probability that the block drawn equals a random block of the clip's last context frame. Self: see self_checks."""
+    probability that a random block of the clip's last context frame equals the real block. Self: see self_checks."""
     hit, gap, chance, s_hit, s_gap, s_chance = [], [], [], [], [], []
     for g in ("memory", "long"):
         gen, ch = generate(wm, model, d, g), d[f"{g}_checks"].astype(int)
@@ -313,7 +313,7 @@ def score_memory(wm, model, d):
                            d["tile_night"])
         hit.append(drawn == ch[:, 4])
         gap.append(ch[:, 5])
-        chance.append(d[f"{g}_prior"][ch[:, 0], drawn])
+        chance.append(d[f"{g}_prior"][ch[:, 0], ch[:, 4]])
         for out, x in zip((s_hit, s_chance, s_gap), self_checks(gen, d[f"{g}_light"], d, d[f"{g}_self"].astype(int))):
             out.append(x)
     gain, rate, _, n = gains(*map(np.concatenate, (hit, chance, gap)))
