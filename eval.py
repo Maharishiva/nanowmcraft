@@ -384,11 +384,12 @@ def main():
     metrics, preview = score_play(wm, model, d)
     metrics |= score_logic(wm, model, d) | score_memory(wm, model, d)
     score, geometric, parts = north_star(metrics)
-    eval_s = round(time.perf_counter() - start, 1)
+    elapsed = time.perf_counter() - start
+    eval_s = round(elapsed, 1)
     clips = {g: len(d[f"{g}_frames"]) for g in GROUPS}
     gates = {"reward_ap": (metrics["reward_ap"] or 0) >= REWARD_AP_FLOOR,
              "done_ap": (metrics["done_ap"] or 0) >= DONE_AP_FLOOR}
-    in_budget = a.every == 1 and meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S
+    in_budget = a.every == 1 and meta["train_s"] <= TRAIN_BUDGET_S and elapsed <= EVAL_BUDGET_S
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tag": a.tag or a.model.parent.name,
            "note": a.note, "score": score, "score_geometric": geometric, "parts": parts, **metrics,
            "train_seed": meta["cfg"]["seed"], "clips": clips, "batch": BATCH, "train_s": meta["train_s"], "eval_s": eval_s,
