@@ -189,7 +189,7 @@ def make_gif(real, predicted, path, k=8, scale=4):
 
 def rollout(wm, model, context, context_actions, actions, keys):
     """Frames (B, T, H, W, 3) generated one action of actions (B, T) at a time after the real context, one key each."""
-    state = wm.start(model, context, context_actions)
+    state = wm.start(model, context.copy(), context_actions.copy())
     out = []
     for action, key in zip(actions.T, keys):
         frame, state = wm.step(model, state, jnp.asarray(action), key)
@@ -216,7 +216,7 @@ def read_heads(wm, model, frames, actions, key):
     reward, done = np.zeros((len(frames), FUT), np.float32), np.zeros((len(frames), FUT), np.float32)
     for w, s in enumerate(range(0, FUT, HEAD_HOR)):
         window = slice(s, s + CTX + HEAD_HOR)
-        r, d = wm.heads(model, frames[:, window], actions[:, window], jax.random.fold_in(key, w))
+        r, d = wm.heads(model, frames[:, window].copy(), actions[:, window].copy(), jax.random.fold_in(key, w))
         r, d = np.asarray(r), np.asarray(d)
         if r.shape != actions[:, window].shape or d.shape != r.shape or not np.isfinite(r).all() \
                 or not np.isfinite(d).all() or ((d < 0) | (d > 1)).any() or (d[:, 0] != 0).any():
