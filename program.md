@@ -18,13 +18,13 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 - **Seeds.** Training seeds 0, 1 and 2 of one recipe: the seed changes the randomness, never the code or the hyperparameters. Report all three rows.
 - **Gates.** Measured in the maintainer's rerun, on the same machine and seeds, on a private test set: clips built by `make_eval.py` in the same way from worlds that are not in `eval.npz`. Ranked on the score alone:
   - score: the new mean minus the best mean must exceed `1.65 * sqrt((sd_best^2 + sd_new^2) / 3)`, where `sd` is the sample SD over the three seeds. Stable recipes need a smaller margin.
-  - reward AP: the new three-seed mean stays at or above a fixed floor, 95% of iteration 1's mean (`train_tiny.py` at [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py)). The floor does not move when the best changes.
+  - reward AP: the new three-seed mean stays at or above a fixed floor, 95% of iteration 1's mean (`train_tiny.py` at [23e6515](https://github.com/Maharishiva/tinywmcraft/blob/23e6515/train_tiny.py)). The floor does not move when the best changes.
   - done AP: the new three-seed mean stays at or above a fixed floor of 0.15.
   - Each `eval.py` row also flags its own run against the floors (`gates`, `eligible`). That is for information only: the gates are judged on the three-seed means, and the score is never changed.
 
 | reward_ap | done_ap |
 |---:|---:|
-| 0.881 | 0.15 |
+| 0.872 | 0.15 |
 
 One run is noisy: compare three-seed means, never single runs.
 

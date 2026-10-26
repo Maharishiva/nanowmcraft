@@ -37,7 +37,7 @@ Paste this into Codex, Claude Code or any coding agent:
 
 | # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | done AP ↑ | train s | code | checkpoints |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | the whole model in one file, no custom kernels | 0.292 ± 0.031 | 65.9 | 0.01 | 0.063 | 0.928 | 0.248 | 559 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
+| 1 | [train_tiny.py](train_tiny.py): the whole model in 178 lines, no custom kernels | 0.287 ± 0.019 | 67.2 | 0.03 | 0.056 | 0.918 | 0.272 | 554 | [23e6515](https://github.com/Maharishiva/tinywmcraft/blob/23e6515/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
 | 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.463 ± 0.023 | 44.3 | 0.55 | 0.087 | 0.934 | 0.247 | 582 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
 | 3 | [train.py](train.py): clean/masked/noised tokenizer, flow matching + shortcut loss, Muon, two fused kernels, 1/8 game-start windows | 0.562 ± 0.017 | 27.2 | 0.69 | 0.087 | 0.929 | 0.190 | 571 | [8538aa5](https://github.com/Maharishiva/tinywmcraft/blob/8538aa5/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
 
@@ -86,7 +86,7 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # abo
 | [kernels.py](kernels.py)       | two fused Pallas kernels for NVIDIA GPUs (attention, and a gated residual add with the next norm) for speed ⚡️               |
 | [eval.py](eval.py)             | the frozen benchmark (clips built by [make_eval.py](make_eval.py) from [collect/](collect/))                                 |
 | [play_wm.py](play_wm.py)       | play inside a trained model with your keyboard                                                                               |
-| [train_tiny.py](train_tiny.py) | a minimal 178-line version for learning (0.287 ± 0.019, about iteration 1)                                                   |
+| [train_tiny.py](train_tiny.py) | iteration 1: the whole model in 178 lines, no custom kernels, for learning                                                   |
 | [program.md](program.md)       | benchmark rules, model interface and how to submit                                                                           |
 | [CHALLENGE.md](CHALLENGE.md)   | the diamonds speedrun & glitch challenge                                                                                     |
 
