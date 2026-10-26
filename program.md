@@ -2,8 +2,8 @@
 
 How to beat tinywmcraft, for people and for coding agents.
 
-The goal: a higher score than the best so far (iteration 3, 0.518 ± 0.010) from one 10-minute A100 run, without making the reward head worse.
-The score is 0.25 gFVD + 0.25 game logic + 0.25 memory + 0.125 reward + 0.125 done, each part 0 for a trivial model and 1 for the real game ([README](README.md#evaluation)).
+The goal: a higher score than the best so far (iteration 3, 0.562 ± 0.017) from one 10-minute A100 run, without making the reward head worse.
+The score is 0.4 gFVD + 0.2 game logic + 0.2 memory + 0.1 reward + 0.1 done, each part 0 for a trivial model and 1 for the real game ([README](README.md#evaluation)).
 Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/benchmark.html).
 
 ## Rules

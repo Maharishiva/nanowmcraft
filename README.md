@@ -1,4 +1,5 @@
-![tinywmcraft](docs/assets/logo-light.png)
+![tinywmcraft](docs/assets/logo-light.png#gh-light-mode-only)
+![tinywmcraft](docs/assets/logo-dark.png#gh-dark-mode-only)
 
 ### Train a world model in under 10 minutes for $0.1 of compute, and play it!
 
@@ -21,7 +22,7 @@ Walk around, craft, fight, sleep through the night, and see what the model gets 
 
 ### Beat it
 
-tinywmcraft is first and foremost an autoresearch benchmark: train your own world model in under 10 minutes on one A100 and beat the best score. Beat the current SOTA model.
+tinywmcraft is first and foremost an autoresearch benchmark: train your own world model in under 10 minutes on one A100 and beat the best score.
 Paste this into Codex, Claude Code or any coding agent:
 
 ```text
@@ -32,11 +33,11 @@ Paste this into Codex, Claude Code or any coding agent:
 
 | # | change | score ↑ | gFVD ↓ | logic ↑ | memory ↑ | reward AP ↑ | done AP ↑ | train s | code | checkpoints |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | the whole model in one file, no custom kernels | 0.270 ± 0.031 | 65.9 | 0.01 | 0.063 | 0.928 | 0.248 | 559 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
-| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.443 ± 0.013 | 44.3 | 0.55 | 0.087 | 0.934 | 0.247 | 582 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
-| 3 | [train.py](train.py): clean/masked/noised tokenizer, flow matching + shortcut loss, Muon, two fused kernels, 1/8 game-start windows | 0.518 ± 0.010 | 27.2 | 0.69 | 0.087 | 0.929 | 0.190 | 571 | [8538aa5](https://github.com/Maharishiva/tinywmcraft/blob/8538aa5/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
+| 1 | the whole model in one file, no custom kernels | 0.292 ± 0.031 | 65.9 | 0.01 | 0.063 | 0.928 | 0.248 | 559 | [89e3539](https://github.com/Maharishiva/tinywmcraft/blob/89e3539/train_tiny.py) | [iteration1](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration1) |
+| 2 | tile transformer tokenizer, fused Pallas kernels, hard-window mining, symlog reward head | 0.463 ± 0.023 | 44.3 | 0.55 | 0.087 | 0.934 | 0.247 | 582 | [80b1c34](https://github.com/Maharishiva/tinywmcraft/blob/80b1c34/train.py) | [iteration2](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration2) |
+| 3 | [train.py](train.py): clean/masked/noised tokenizer, flow matching + shortcut loss, Muon, two fused kernels, 1/8 game-start windows | 0.562 ± 0.017 | 27.2 | 0.69 | 0.087 | 0.929 | 0.190 | 571 | [8538aa5](https://github.com/Maharishiva/tinywmcraft/blob/8538aa5/train.py) | [iteration3](https://huggingface.co/maharishiva/tinywmcraft-v3/tree/main/iteration3) |
 
-Mean ± sample SD over seeds 0, 1 and 2 on one Colab A100-SXM4-40GB (`train s` is the slowest seed; score is 0 for a trivial model and 1 for the real game, see [evaluation](#evaluation) and the [live leaderboard](https://maharishiva.github.io/tinywmcraft/benchmark.html)).
+Mean ± sample SD over seeds 0, 1 and 2 on one Colab A100-SXM4-40GB (`train s` is the slowest seed; see [evaluation](#evaluation) and the [live leaderboard](https://maharishiva.github.io/tinywmcraft/benchmark.html)).
 
 ## Quickstart
 
@@ -81,27 +82,27 @@ python eval.py  --model runs/base/model.npz --tag base --gif               # abo
 | [kernels.py](kernels.py)       | two fused Pallas kernels for NVIDIA GPUs (attention, and a gated residual add with the next norm) for speed ⚡️               |
 | [eval.py](eval.py)             | the frozen benchmark (clips built by [make_eval.py](make_eval.py) from [collect/](collect/))                                 |
 | [play_wm.py](play_wm.py)       | play inside a trained model with your keyboard                                                                               |
-| [train_tiny.py](train_tiny.py) | pure art minimalistic 178-line version for educational purpuses (scores 0.266 ± 0.023 an iteration 1)                        |
+| [train_tiny.py](train_tiny.py) | a minimal 178-line version for learning (0.287 ± 0.019, about iteration 1)                                                   |
 | [program.md](program.md)       | benchmark rules, model interface and how to submit                                                                           |
 | [CHALLENGE.md](CHALLENGE.md)   | the diamonds speedrun & glitch challenge                                                                                     |
 
 - **Tokenizer.** A 63×63 frame becomes a 4×4×32 latent: the 81 tiles of 7×7 pixels are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks; the decoder mirrors it. A third of each batch is clean, a third has half its tiles grey and a third is noised; the target is always the clean frame. Without the masked and noised thirds, game logic falls apart.
 - **World model.** A six-block, width-256 transformer alternates spatial attention over the 16 latent tokens with causal attention across 32 frames. The action, each frame's noise level and the sampler's step size condition adaLN-zero blocks; flow matching predicts the clean latent, and eight Euler steps generate each frame.
-- Losses: masked/noised Mae for tokenizer, diffusion forcing for 
+- **Losses.** Tokenizer: MSE to the clean frame. World model: flow matching with diffusion forcing (each frame its own noise level) plus a shortcut loss; a two-hot reward head and a done head.
 
 ## Dataset
 
-`train.npz` /holds 500k transitions (250 streams of 2000 steps) of 63×63 frames, actions, rewards and episode ends from four RL agents ([collect/](collect/)).
+`train.npz` holds 500k transitions (250 streams of 2000 steps) of 63×63 frames, actions, rewards and episode ends from four RL agents ([collect/](collect/)).
 
-Hugging face: 
+On Hugging Face: [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3/blob/main/train.npz) (1.4 GB), [`eval.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3/blob/main/eval.npz) (0.4 GB), and the [checkpoints](https://huggingface.co/maharishiva/tinywmcraft-v3) of every iteration.
 
 ## Evaluation
 
-The frozen evaluator ([make_eval.py](make_eval.py)) primes the model with eight real frames of held-out play, generates one frame per action. Submissions are ranked on a private test set built the same way.
+The frozen evaluator ([eval.py](eval.py), clips built by [make_eval.py](make_eval.py)) primes the model with eight real frames of held-out play, then generates one frame per action. Submissions are ranked on a private test set built the same way.
 
 - **Score ↑** a north star metric to optimize: 0.4 gFVD + 0.2 logic + 0.2 memory + 0.1 reward + 0.1 done, each normalized to [0, 1]
 - **Play (gFVD ↓):** Fréchet distance (× 10^4) in a fixed random CNN over 2048 clips of 64 actions
-- **Logic ↑:** 8 scripted actions across 7 families (chop, mine, drink, eat, place, craft, sleep), with and without required tools, stations or ingredients. Passes if inventory, stats, target cell and sleep tint match the real game on all 8 frames; scored as true-positive plus true-negative pass rate minus 1.
+- **Logic ↑:** 8 scripted actions across 7 families (chop, mine, drink, eat, place, craft, sleep), with and without required tools, stations or ingredients. Passes if inventory, food, drink, target cell and sleep tint match the real game on all 8 frames; scored as true-positive plus true-negative pass rate minus 1.
 - **Memory ↑:** out-and-back walks (48 and 144 actions) across gap buckets from 4–7 to 64+ frames, half **recall** (context cells returning to view vs. random context blocks) and half **self-consistency** (model-generated cells leaving and returning vs. other generated cells).
 - **reward AP ↑ and done AP ↑:** average precision of the reward and termination heads on real transitions.
 

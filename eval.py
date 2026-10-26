@@ -37,7 +37,7 @@ gray map tint.
   reward_ap / done_ap  the heads teacher-forced on the real play frames, each future frame read with 8 frames of
            context before it: average precision of |predicted reward| for the reward events and of the done
            probability for the deaths. reward_base / done_base are the shares of positives.
-  score    the north star: 0.25 gFVD + 0.25 logic + 0.25 memory + 0.125 reward + 0.125 done, each part clipped to
+  score    the north star: 0.4 gFVD + 0.2 logic + 0.2 memory + 0.1 reward + 0.1 done, each part clipped to
            [0, 1], 0 at a trivial model and 1 at the real game. gFVD part: log(GFVD_ZERO / gFVD) / log(GFVD_ZERO /
            GFVD_ONE); GFVD_ZERO is the gFVD of copying the last context frame, GFVD_ONE the gFVD of the real game
            itself, replayed from the same states with fresh randomness (mobs, saplings, night). Reward and done parts:
@@ -77,7 +77,7 @@ EVAL_SEED, BATCH, FEAT_BATCH, PROBE_BATCH = 0, 256, 16, 2048
 CLIP, FEAT_SEED = 4, 1234
 GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 300
 GFVD_ZERO, GFVD_ONE = 170.0, 14.0                  # measured on data/eval.npz (copy, replayed game)
-WEIGHTS = {"gfvd": 0.25, "logic": 0.25, "memory": 0.25, "reward": 0.125, "done": 0.125}
+WEIGHTS = {"gfvd": 0.4, "logic": 0.2, "memory": 0.2, "reward": 0.1, "done": 0.1}
 REWARD_AP_FLOOR, DONE_AP_FLOOR = 0.881, 0.15
 GAPS = (4, 8, 16, 32, 64, 10 ** 4)
 GROUPS = ("play", "logic", "memory", "long")
