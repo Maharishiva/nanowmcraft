@@ -20,9 +20,9 @@ No game engine runs behind the [browser player](https://maharishiva.github.io/ti
 Open the [player](https://maharishiva.github.io/tinywmcraft/#play) (needs WebGPU, desktop or phone). WASD to move, space to act, the placements and crafts on buttons.
 Walk around, craft, fight, sleep through the night, and see what the model gets wrong: it learned the game from pixels, so it has its own ideas about the rules.
 
-![Eight worlds the model imagines from noise, each played inside the model by a PPO agent trained for diamonds; an orange frame marks a diamond in the inventory](docs/assets/dream.gif)
+![Eight worlds the model imagines from noise, each played inside the model by a PPO agent trained for diamonds; the two at the bottom right at night](docs/assets/dream.gif)
 
-Eight worlds imagined from noise, each played inside the model by the diamond-trained RL agent that collected most of the data; an orange frame marks a diamond in the inventory (35 of 256 worlds got one within 450 actions).
+Eight worlds imagined from noise, each played inside the model by the diamond-trained RL agent that collected most of the data, 100 actions each; the two at the bottom right fall into night and sleep. Played on for 450 actions, 44 of 256 such worlds get a diamond.
 
 ### Beat it
 

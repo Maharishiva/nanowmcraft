@@ -21,41 +21,76 @@ sys.path.insert(0, str(ROOT / "docs"))
 NCTX, NGEN, STEPS = 8, 4, 8
 
 
+def windows(data_path):
+    """Held-out windows of 8 real frames and 4 actions in full daylight: two moves that scroll the view, a do that adds
+    wood (a tree chopped), then a place or craft that changes the inventory; walk, walk, chop, place a table first."""
+    import make_play_gif
+    import eval as E
+    data, z = make_play_gif.streams(data_path), np.load(data_path)
+    frames, acts, dones = data["frames"], data["actions"], data["dones"].astype(bool)
+    light = make_play_gif.daylight(frames, z["tile_tex"], z["tile_night"])
+    hud = E.read_hud(frames.reshape(-1, 63, 63, 3), z["hud_tpl"]).reshape(frames.shape[:2] + (16,))
+    motion = np.abs(np.diff(frames[:, :, :49].astype(np.int16), axis=0)).mean(axis=(2, 3, 4))
+    out = []
+    for env in range(frames.shape[1]):
+        for s in range(1, frames.shape[0] - NCTX - NGEN + 1):
+            t = s + NCTX - 1                                   # the step into the first imagined frame
+            a = acts[t:t + NGEN, env]
+            if dones[s - 1:s + NCTX + NGEN - 1, env].any() or light[s:s + NCTX + NGEN, env].min() < 0.9:
+                continue
+            walk = np.isin(a[:2], [1, 2, 3, 4]).all() and (motion[t:t + 2, env] > 8).all()
+            chop = a[2] == 5 and hud[t + 3, env, 5] == hud[t + 2, env, 5] + 1
+            place = 7 <= a[3] <= 16 and (hud[t + 4, env] != hud[t + 3, env]).any()
+            if walk and chop and place:
+                out.append((int(a[0] == a[1]) + int(a[3] == 8) + int(a[0] == 3), s, env))
+    return data, sorted(out, key=lambda r: -r[0])
+
+
 def rollout(model_path, data_path, seed=0):
-    """Encode 8 real frames of the window used by assets/play.gif, then imagine 4 frames as train.sample does
-    (the past runs once to cache its keys and values, then 8 Euler steps carry the new slot from noise), keeping every
-    Euler step."""
+    """Encode 8 real frames of a window, then imagine 4 frames as train.sample does (the past runs once to cache its
+    keys and values, then 8 Euler steps carry the new slot from noise), keeping every Euler step. Of the best
+    windows, the one whose imagined frames come closest to the real ones."""
     import jax
     import jax.numpy as jnp
     import train
-    import make_play_gif
-    make_play_gif.T = ARGS.steps
-    data, ranked = make_play_gif.windows(data_path, ARGS.style)
-    start, env = ranked[ARGS.rank]
-    frames = data["frames"][start:start + NCTX + NGEN, env]
-    actions = data["actions"][start - 1:start + NCTX + NGEN - 1, env].astype(np.int32)
+    data, ranked = windows(data_path)
     model = train.load_model(model_path)
     wm, win, dt = model.wm, train.WIN, 1.0 / STEPS
-    ctx = model.tok.encode(jnp.asarray(frames[None, :NCTX]))[0]
-    seq = jnp.zeros((1, win) + ctx.shape[1:]).at[0, :NCTX].set(ctx)
-    aseq = jnp.zeros((1, win), jnp.int32).at[0, :NCTX + NGEN].set(jnp.asarray(actions))
     tau = jnp.where(jnp.arange(win) < NCTX, 1.0, train.CTX_SIGNAL)[None]              # real frames clean
-    past = jax.jit(lambda seq, key: wm(train.noised(seq, tau[..., None, None, None], key), tau, aseq)[2])
-    euler = jax.jit(lambda x, t, cache, n: wm(x[:, None], jnp.full((1, 1), t), aseq[:, n][:, None], cache, n, dt)[0][:, 0])
-    key, zs_all = jax.random.PRNGKey(seed), []
-    for f in range(NGEN):
-        n = NCTX + f
-        key, kc, kz = jax.random.split(key, 3)
-        cache, z, zs = past(seq, kc), jax.random.normal(kz, (1,) + seq.shape[-3:]), []
-        for k in range(STEPS):
+    past = jax.jit(lambda seq, a, key: wm(train.noised(seq, tau[..., None, None, None], key), tau, a)[2])
+    euler = jax.jit(lambda x, t, a, cache, n: wm(x[:, None], jnp.full((1, 1), t), a[:, n][:, None], cache, n, dt)[0][:, 0])
+
+    def one(start, env):
+        frames = data["frames"][start:start + NCTX + NGEN, env]
+        actions = data["actions"][start - 1:start + NCTX + NGEN - 1, env].astype(np.int32)
+        ctx = model.tok.encode(jnp.asarray(frames[None, :NCTX]))[0]
+        seq = jnp.zeros((1, win) + ctx.shape[1:]).at[0, :NCTX].set(ctx)
+        aseq = jnp.zeros((1, win), jnp.int32).at[0, :NCTX + NGEN].set(jnp.asarray(actions))
+        key, zs_all = jax.random.PRNGKey(seed), []
+        for f in range(NGEN):
+            n = NCTX + f
+            key, kc, kz = jax.random.split(key, 3)
+            cache, z, zs = past(seq, aseq, kc), jax.random.normal(kz, (1,) + seq.shape[-3:]), []
+            for k in range(STEPS):
+                zs.append(np.asarray(z[0]))
+                z = z + (euler(z, k * dt, aseq, cache, n) - z) / (STEPS * (1.0 - k * dt))
             zs.append(np.asarray(z[0]))
-            z = z + (euler(z, k * dt, cache, n) - z) / (STEPS * (1.0 - k * dt))
-        zs.append(np.asarray(z[0]))
-        seq = seq.at[:, n].set(z)
-        zs_all.append(zs)
-    Z = np.array(zs_all)
-    zdec = np.stack([np.round(np.asarray(model.tok.decode(jnp.asarray(Z[f]))) * 255).astype(np.uint8) for f in range(NGEN)])
-    return frames, actions, np.asarray(ctx), Z, zdec
+            seq = seq.at[:, n].set(z)
+            zs_all.append(zs)
+        Z = np.array(zs_all)
+        zdec = np.stack([np.round(np.asarray(model.tok.decode(jnp.asarray(Z[f]))) * 255).astype(np.uint8)
+                         for f in range(NGEN)])
+        return frames, actions, np.asarray(ctx), Z, zdec
+
+    best = []
+    for score, start, env in ranked[:8]:                   # the pattern counts 3 pixel levels of difference per point
+        out = one(start, env)
+        err = np.abs(out[4][:, STEPS].astype(np.int16) - out[0][NCTX:]).mean()
+        best.append((err - 3 * score, start, env, out))
+        print(f"window env {env} start {start}: actions {out[1][NCTX:].tolist()}, imagined vs real {err:.1f}")
+    _, start, env, out = sorted(best, key=lambda b: b[0])[ARGS.rank]
+    print(f"picked env {env} start {start}")
+    return out
 
 
 PARSER = argparse.ArgumentParser()
@@ -63,9 +98,7 @@ PARSER.add_argument("--model", type=Path, help="checkpoint (the horizontal GIF)"
 PARSER.add_argument("--data", type=Path, default=ROOT / "data" / "eval.npz")
 PARSER.add_argument("--out", type=Path, help="default: docs/assets/architecture.gif, or architecture_v1.gif")
 PARSER.add_argument("--seed", type=int, default=0)
-PARSER.add_argument("--style", default="progress", help="the play.gif window: its --style, --steps and --rank")
-PARSER.add_argument("--steps", type=int, default=48)
-PARSER.add_argument("--rank", type=int, default=0)
+PARSER.add_argument("--rank", type=int, default=0, help="of the candidate windows, by how close the model gets")
 PARSER.add_argument("--vertical", choices=["v1"], help="re-lay out the frames of --src top to bottom (phones)")
 PARSER.add_argument("--src", type=Path, default=ROOT / "docs" / "assets" / "architecture.gif")
 ARGS = PARSER.parse_args()
@@ -134,14 +167,14 @@ def up(a, s):
     return np.repeat(np.repeat(a, s, 0), s, 1)
 
 
-# ---------------------------------------------------------------- latent colours: fixed PCA fitted on the context latents
-def fit_colors(ctx_lat):
-    global _MU, _PC, _SD
-    flat = ctx_lat.reshape(-1, 32).astype(np.float64)
-    _MU = flat.mean(0)
-    _, _, vt = np.linalg.svd(flat - _MU, full_matrices=False)
-    _PC = vt[:3]
-    _SD = ((flat - _MU) @ _PC.T).std(0)
+# ---------------------------------------------------------------- latent colours: the one channel that changes most
+def fit_colors(ctx_lat, gen_lat):
+    """Of the 32 latent channels, the one that changes most from frame to frame over the context and the imagined
+    frames; its mean and spread set the colour scale."""
+    global _CH, _MU, _SD
+    seq = np.concatenate([ctx_lat, gen_lat]).reshape(len(ctx_lat) + len(gen_lat), -1, 32).astype(np.float64)
+    _CH = int(np.argmax(np.abs(np.diff(seq, axis=0)).mean((0, 1))))
+    _MU, _SD = seq[..., _CH].mean(), seq[..., _CH].std() + 1e-6
 
 
 def hsl(h, s, l):
@@ -154,15 +187,10 @@ def hsl(h, s, l):
 
 
 def lat_colors(lat):
-    """(4, 4, 32) latent -> (4, 4, 3) uint8 colours, blue family; clean latents coherent, noise speckled."""
-    p = ((lat.reshape(-1, 32) - _MU) @ _PC.T) / _SD
-    p = p / float(np.clip(p.std(0).mean(), 0.45, 1.0))     # keep full contrast for noisy slots (display only)
-    out = []
-    for p0, p1, p2 in p:
-        l = float(np.clip(0.50 + 0.17 * p0, 0.14, 0.86))
-        h = 218 + 28 * float(np.clip(p1, -2.0, 2.0))
-        s = float(np.clip(0.62 + 0.15 * p2, 0.25, 0.95))
-        out.append([int(round(255 * v)) for v in hsl(h, s, l)])
+    """(4, 4, 32) latent -> (4, 4, 3) uint8 colours of the chosen channel, blue family: dark low, light high; noise
+    speckled."""
+    p = (lat.reshape(-1, 32)[:, _CH] - _MU) / _SD
+    out = [[int(round(255 * v)) for v in hsl(218, 0.62, float(np.clip(0.50 + 0.17 * p0, 0.14, 0.86)))] for p0 in p]
     return np.array(out, np.uint8).reshape(4, 4, 3)
 
 
@@ -624,7 +652,7 @@ def main():
         ARGS.out.parent.mkdir(parents=True, exist_ok=True)
         return vertical(ARGS.src, ARGS.out)
     FRAMES, ACTIONS, CTX_LAT, Z, ZDEC = rollout(ARGS.model, ARGS.data, ARGS.seed)
-    fit_colors(CTX_LAT)
+    fit_colors(CTX_LAT, Z[:, STEPS])
     frames, durs = [], []
     for st, d in timeline():
         img = render(st)

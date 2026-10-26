@@ -5,9 +5,10 @@ the agent sees only the frames the model draws, and the model draws the next one
     python docs/make_dream_gif.py --model runs/best/model.npz --policy policies/walker.pkl   # -> docs/assets/dream.gif
 
 The first frame of every world is imagined from nothing; one that shows items or less than full stats is drawn again,
-as in the browser player. Frames while the agent sleeps are skipped, as the player skips the night. The worlds that
-get furthest (the items the model draws in the inventory, on two frames in a row) and stay in daylight are shown,
-2 rows of 4. A GPU helps: 96 worlds of 600 steps take about a minute on an A100.
+as in the browser player. Shown, 2 rows of 4: the first 100 steps of the worlds that get furthest in them (the items
+the model draws in the inventory, on two frames in a row) in daylight, and two worlds at a stretch where night falls
+and the agent sleeps. The script also counts the worlds that draw a diamond within all the steps. A GPU helps: 256
+worlds of 450 steps take about a minute on an A100.
 """
 import argparse
 import pickle
@@ -106,19 +107,47 @@ def reached(hud):
     return np.concatenate([np.zeros_like(has[:1]), has[1:] & has[:-1]])
 
 
-def rank(frames, d):
-    """Per world: the furthest it got (GAIN of the items it ever held), its share of dark awake frames, and the
-    frames with the agent awake."""
-    rows = []
+def read(frames, d):
+    """Per world: the items it holds (two frames in a row), asleep, and the light of every frame."""
+    out = []
     for w in frames:
         hud = E.read_hud(w, d["hud_tpl"])
-        awake = ~E.asleep(w)
-        light = daylight(w[:, None], d["tile_tex"], d["tile_night"])[:, 0]
-        got = reached(hud)
-        dead = (hud[:, 0] == 0).any()
-        rows.append(dict(gain=float((got.any(0) * GAIN).sum()), dark=float((light[awake] < 0.6).mean()),
-                         diamond=int(np.argmax(got[:, 9])) if got[:, 9].any() else -1, dead=bool(dead), awake=awake))
-    return rows
+        out.append(dict(got=reached(hud), dead=hud[:, 0] == 0, asleep=E.asleep(w),
+                        light=daylight(w[:, None], d["tile_tex"], d["tile_night"])[:, 0]))
+    return out
+
+
+def day_score(r, s, n):
+    """Steps s to s + n: the items gained (GAIN), less 20 times the share of dark or asleep frames; None if it dies."""
+    seg = slice(s, s + n)
+    if r["dead"][seg].any():
+        return None
+    held = r["got"][s] if s else np.zeros(16, bool)
+    dim = (r["light"][seg] < 0.6) | r["asleep"][seg]
+    return float(((r["got"][seg].any(0) & ~held) * GAIN).sum()) - 20 * float(dim.mean())
+
+
+def night_score(r, s, n):
+    """Steps s to s + n: night and sleep both shown, the agent falling asleep or waking up counts most."""
+    seg = slice(s, s + n)
+    if r["dead"][seg].any():
+        return None
+    sleep, dark = r["asleep"][seg], (r["light"][seg] < 0.5) & ~r["asleep"][seg]
+    turns = int((sleep[1:] != sleep[:-1]).sum())
+    return min(int(sleep.sum()), 40) + min(int(dark.sum()), 30) + 15 * min(turns, 2) if sleep.sum() <= 0.7 * n else None
+
+
+def pick(rows, n, show, night, every=5):
+    """(world, first step) of `show` worlds: `night` of them at their best stretch with night and sleep, the rest from
+    their first frame by the items gained."""
+    best = lambda f, starts: [max(((f(r, s, n), s) for s in starts if f(r, s, n) is not None), default=(None, 0))
+                              for r in rows]
+    nights = best(night_score, range(0, len(rows[0]["light"]) - n + 1, every))
+    days = best(day_score, [0])
+    by_night = sorted((i for i in range(len(rows)) if nights[i][0] is not None), key=lambda i: -nights[i][0])[:night]
+    by_day = sorted((i for i in range(len(rows)) if days[i][0] is not None and i not in by_night),
+                    key=lambda i: -days[i][0])[:show - len(by_night)]
+    return [(i, 0) for i in by_day] + [(i, nights[i][1]) for i in by_night]
 
 
 def compose(worlds, marks, length, stride, scale=3, gap=8, cols=4):
@@ -147,13 +176,15 @@ def main():
     p.add_argument("--policy", type=Path, default=Path("policies/walker.pkl"))
     p.add_argument("--data", type=Path, default=Path("data/eval.npz"), help="for the HUD and tile templates only")
     p.add_argument("--out", type=Path, default=ROOT / "docs" / "assets" / "dream.gif")
-    p.add_argument("--worlds", type=int, default=96)
-    p.add_argument("--steps", type=int, default=600)
+    p.add_argument("--worlds", type=int, default=256)
+    p.add_argument("--steps", type=int, default=450)
+    p.add_argument("--first", type=int, default=100, help="steps shown per world")
     p.add_argument("--show", type=int, default=8)
-    p.add_argument("--stride", type=int, default=3, help="one GIF frame per this many steps")
-    p.add_argument("--fps", type=float, default=15.0)
+    p.add_argument("--night", type=int, default=2, help="worlds shown at a stretch with night and sleep")
+    p.add_argument("--stride", type=int, default=1, help="one GIF frame per this many steps")
+    p.add_argument("--fps", type=float, default=11.25)
     p.add_argument("--scale", type=int, default=3, help="screen pixels per game pixel")
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seed", type=int, default=1)
     p.add_argument("--cache", type=Path, help="an npz of the rollout: written if missing, read if there")
     a = p.parse_args()
     z = np.load(a.data)
@@ -164,17 +195,14 @@ def main():
     else:
         pol = plain(pickle.load(open(a.policy, "rb"))["state"]["ac"])
         frames, _ = dream(train.load_model(a.model), pol, d["hud_tpl"], a.worlds, a.steps, a.seed)
-    rows = rank(frames, d)
-    late = lambda r: (r["diamond"] if r["diamond"] >= 0 else a.steps) / 100              # an early diamond first
-    order = sorted(range(len(rows)), key=lambda i: (rows[i]["dead"], late(rows[i]) - rows[i]["gain"] + 20 * rows[i]["dark"]))
-    if a.cache and not cached:                                         # the best 3 * show worlds, to lay out again
-        np.savez_compressed(a.cache, frames=frames[order[:3 * a.show]])
-    order = order[:a.show]
-    order = sorted(order, key=lambda i: (rows[i]["diamond"] < 0, rows[i]["diamond"]))      # diamonds first
-    worlds = [frames[i][rows[i]["awake"]] for i in order]                                  # sleep skipped
-    marks = [int(np.cumsum(rows[i]["awake"])[rows[i]["diamond"]]) - 1 if rows[i]["diamond"] >= 0 else -1 for i in order]
-    length = max(len(w) for w in worlds) if min(marks) < 0 else max(marks) + 3 * a.stride   # ends on the last diamond
-    out = compose(worlds, marks, length, a.stride, a.scale)
+    rows = read(frames, d)
+    shown = pick(rows, a.first, a.show, a.night)
+    if a.cache and not cached:                                         # the worlds shown, to lay out again
+        np.savez_compressed(a.cache, frames=frames[[i for i, _ in shown]])
+    worlds = [frames[i][s:s + a.first] for i, s in shown]
+    marks = [int(np.argmax(rows[i]["got"][s:s + a.first, 9])) if rows[i]["got"][s:s + a.first, 9].any() else -1
+             for i, s in shown]
+    out = compose(worlds, marks, a.first, a.stride, a.scale)
     out += [out[-1]] * int(a.fps * 2)
     import imageio.v3 as iio
     a.out.parent.mkdir(parents=True, exist_ok=True)
@@ -185,9 +213,11 @@ def main():
                         "128:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle", "-gifflags", "+transdiff",
                         tmp], check=True)
         tmp.replace(a.out)
-    for i in order:
-        print(f"world {i}: gain {rows[i]['gain']:.0f}, dark {rows[i]['dark']:.2f}, diamond at step {rows[i]['diamond']}")
-    got = sum(r["diamond"] >= 0 for r in rows)
+    for i, s in shown:
+        r = rows[i]
+        print(f"world {i} from step {s}: asleep {r['asleep'][s:s + a.first].sum()}, dark "
+              f"{(r['light'][s:s + a.first] < 0.5).sum()}, items {np.flatnonzero(r['got'][s:s + a.first].any(0)).tolist()}")
+    got = sum(r["got"][:, 9].any() for r in rows)
     print(f"{a.out}: {len(out)} frames; {got} of {len(rows)} worlds drew a diamond in the inventory")
 
 
