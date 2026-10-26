@@ -22,16 +22,16 @@ NCTX, NGEN, STEPS = 8, 4, 8
 
 
 def rollout(model_path, data_path, seed=0):
-    """Encode 8 real frames of the craft window used by assets/play.gif, then imagine 4 frames as train.sample does
+    """Encode 8 real frames of the window used by assets/play.gif, then imagine 4 frames as train.sample does
     (the past runs once to cache its keys and values, then 8 Euler steps carry the new slot from noise), keeping every
     Euler step."""
     import jax
     import jax.numpy as jnp
     import train
-    from clips import streams
-    from make_play_gif import rank_windows
-    data = streams(data_path)
-    start, env = rank_windows(data, "craft")[0]
+    import make_play_gif
+    make_play_gif.T = ARGS.steps
+    data, ranked = make_play_gif.windows(data_path, ARGS.style)
+    start, env = ranked[ARGS.rank]
     frames = data["frames"][start:start + NCTX + NGEN, env]
     actions = data["actions"][start - 1:start + NCTX + NGEN - 1, env].astype(np.int32)
     model = train.load_model(model_path)
@@ -63,6 +63,9 @@ PARSER.add_argument("--model", type=Path, help="checkpoint (the horizontal GIF)"
 PARSER.add_argument("--data", type=Path, default=ROOT / "data" / "eval.npz")
 PARSER.add_argument("--out", type=Path, help="default: docs/assets/architecture.gif, or architecture_v1.gif")
 PARSER.add_argument("--seed", type=int, default=0)
+PARSER.add_argument("--style", default="progress", help="the play.gif window: its --style, --steps and --rank")
+PARSER.add_argument("--steps", type=int, default=48)
+PARSER.add_argument("--rank", type=int, default=0)
 PARSER.add_argument("--vertical", choices=["v1"], help="re-lay out the frames of --src top to bottom (phones)")
 PARSER.add_argument("--src", type=Path, default=ROOT / "docs" / "assets" / "architecture.gif")
 ARGS = PARSER.parse_args()

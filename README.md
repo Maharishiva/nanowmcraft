@@ -20,6 +20,10 @@ No game engine runs behind the [browser player](https://maharishiva.github.io/ti
 Open the [player](https://maharishiva.github.io/tinywmcraft/#play) (needs WebGPU, desktop or phone). WASD to move, space to act, the placements and crafts on buttons.
 Walk around, craft, fight, sleep through the night, and see what the model gets wrong: it learned the game from pixels, so it has its own ideas about the rules.
 
+![Eight worlds the model imagines from noise, each played inside the model by a PPO agent trained for diamonds; an orange frame marks a diamond in the inventory](docs/assets/dream.gif)
+
+Eight worlds imagined from noise, each played inside the model by the diamond-trained RL agent that collected most of the data; an orange frame marks a diamond in the inventory (35 of 256 worlds got one within 450 actions).
+
 ### Beat it
 
 tinywmcraft is first and foremost an autoresearch benchmark: train your own world model in under 10 minutes on one A100 and beat the best score.
