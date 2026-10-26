@@ -43,7 +43,28 @@ Mean ± sample SD over seeds 0, 1 and 2 on one Colab A100-SXM4-40GB. Beat iterat
 
 Our own autoresearch loop while the benchmark was being built: 698 runs in 8 days, ranked on **gFVD** alone (how real the imagined play looks, lower is better), on development data and an earlier eval. Now it is your agent's turn, on the full score: [program.md](program.md).
 
-### Quickstart
+## How it works
+
+![Frames go through the encoder into 4x4x32 latents; the world model denoises the newest latent in eight flow-matching steps, conditioned on the action; the decoder shows the frame at every step](docs/assets/architecture.gif)
+
+**13.9M parameters** (5.2M tokenizer, 8.6M world model), trained on [500k transitions](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3) of Craftax-Classic pixels and actions ([dataset](#dataset)), with no game state, tile labels or pretrained features.
+**One training run is under 10 minutes on one A100 (~$0.10); eval about 2.5 minutes.**
+
+| file                           | what it is                                                                                                                   |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| [train.py](train.py)           | iteration 3, the one to beat: MSE tokenizer and diffusion forcing world model with reward and termination heads (~350 lines) |
+| [kernels.py](kernels.py)       | two fused Pallas kernels for NVIDIA GPUs (attention, and a gated residual add with the next norm) for speed ⚡️               |
+| [eval.py](eval.py)             | the frozen benchmark (clips built by [make_eval.py](make_eval.py) from [collect/](collect/))                                 |
+| [play_wm.py](play_wm.py)       | play inside a trained model with your keyboard                                                                               |
+| [train_tiny.py](train_tiny.py) | iteration 1: the whole model in 178 lines, no custom kernels, for learning                                                   |
+| [program.md](program.md)       | benchmark rules, model interface and how to submit                                                                           |
+| [SPEEDRUN.md](SPEEDRUN.md)     | the Diamond Speedrun rules and the glitch thread                                                                             |
+
+- **Tokenizer.** A 63×63 frame becomes a 4×4×32 latent: the 81 tiles of 7×7 pixels are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks; the decoder mirrors it. A third of each batch is clean, a third has half its tiles grey and a third is noised; the target is always the clean frame. Without the masked and noised thirds, game logic falls apart.
+- **World model.** A six-block, width-256 transformer alternates spatial attention over the 16 latent tokens with causal attention across 32 frames. The action, each frame's noise level and the sampler's step size condition adaLN-zero blocks; flow matching predicts the clean latent, and eight Euler steps generate each frame.
+- **Losses.** Tokenizer: MSE to the clean frame. World model: flow matching with diffusion forcing (each frame its own noise level) plus a shortcut loss; a two-hot reward head and a done head.
+
+## Quickstart
 
 Play the best model (CPU works):
 
@@ -66,33 +87,12 @@ python train.py --data data/train.npz --out runs/base/model.npz --seed 0   # und
 python eval.py  --model runs/base/model.npz --tag base --gif               # about 2.5 minutes, appends to ledger.jsonl
 ```
 
-### Rules
+## Rules
 
 - **Data:** `train.npz` only (500k transitions). No external data or pretrained weights.
 - **Compute:** ≤ 600 s training and ≤ 300 s eval (`eval_s`: import, load, compile, generate; iteration 3 takes about 150 s) on one A100 40GB, no persistent compilation cache.
 - **Evaluator:** `eval.py` stays byte-identical; causal generation (one frame per action, no future actions).
 - **Seeds & gates:** report seeds 0, 1 and 2. Mean score must beat the best by a noise-aware margin, with reward AP ≥ 95% of iteration 1 and done AP ≥ 0.15. Ranked on a private test set built the same way. Full details: [program.md](program.md).
-
-## How it works
-
-![Frames go through the encoder into 4x4x32 latents; the world model denoises the newest latent in eight flow-matching steps, conditioned on the action; the decoder shows the frame at every step](docs/assets/architecture.gif)
-
-**13.9M parameters** (5.2M tokenizer, 8.6M world model), trained on [500k transitions](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3) of Craftax-Classic pixels and actions ([dataset](#dataset)), with no game state, tile labels or pretrained features.
-**One training run is under 10 minutes on one A100 (~$0.10); eval about 2.5 minutes.**
-
-| file                           | what it is                                                                                                                   |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| [train.py](train.py)           | iteration 3, the one to beat: MSE tokenizer and diffusion forcing world model with reward and termination heads (~350 lines) |
-| [kernels.py](kernels.py)       | two fused Pallas kernels for NVIDIA GPUs (attention, and a gated residual add with the next norm) for speed ⚡️               |
-| [eval.py](eval.py)             | the frozen benchmark (clips built by [make_eval.py](make_eval.py) from [collect/](collect/))                                 |
-| [play_wm.py](play_wm.py)       | play inside a trained model with your keyboard                                                                               |
-| [train_tiny.py](train_tiny.py) | iteration 1: the whole model in 178 lines, no custom kernels, for learning                                                   |
-| [program.md](program.md)       | benchmark rules, model interface and how to submit                                                                           |
-| [SPEEDRUN.md](SPEEDRUN.md)     | the Diamond Speedrun rules and the glitch thread                                                                             |
-
-- **Tokenizer.** A 63×63 frame becomes a 4×4×32 latent: the 81 tiles of 7×7 pixels are tokens for six transformer blocks, then a stride-2 conv and four residual conv blocks; the decoder mirrors it. A third of each batch is clean, a third has half its tiles grey and a third is noised; the target is always the clean frame. Without the masked and noised thirds, game logic falls apart.
-- **World model.** A six-block, width-256 transformer alternates spatial attention over the 16 latent tokens with causal attention across 32 frames. The action, each frame's noise level and the sampler's step size condition adaLN-zero blocks; flow matching predicts the clean latent, and eight Euler steps generate each frame.
-- **Losses.** Tokenizer: MSE to the clean frame. World model: flow matching with diffusion forcing (each frame its own noise level) plus a shortcut loss; a two-hot reward head and a done head.
 
 ## Dataset
 
@@ -115,7 +115,7 @@ The frozen evaluator ([eval.py](eval.py), clips built by [make_eval.py](make_eva
 Get a diamond inside the world model: in the [browser player](https://maharishiva.github.io/tinywmcraft/#play), not in the real game.
 The fastest run posted before 24 December 2026 (PST) wins a paper copy of Sutton & Barto's *Reinforcement Learning*!
 
-**What counts:** a diamond in the inventory that [iteration 3](https://huggingface.co/maharishiva/tinywmcraft-v3/blob/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr) draws, the model the site plays. The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. The fewest steps win.
+**What counts:** a diamond in the inventory that [iteration 3](https://maharishiva.github.io/tinywmcraft/?model=iteration3#play) draws, the model the site plays; that link keeps playing it when a newer model takes over the site. The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. The fewest steps win.
 
 **How to submit:** press **save clip**, then post the clip in the [Diamond Speedrun discussion](https://github.com/Maharishiva/tinywmcraft/discussions/9), and on X with a link to this repo if you like (**share** writes the caption for you). The clip shows the seed and the action under every frame, so the maintainer can watch it and replay the run. Edited videos, other model files and the real game do not count. The full rules: [SPEEDRUN.md](SPEEDRUN.md).
 
