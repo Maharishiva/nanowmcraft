@@ -215,8 +215,4 @@ if __name__ == "__main__":
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
     M = importlib.import_module(a.module)
-    if hasattr(M, "CDT"):                  # train.py: fp32 on CPU (params are fp32; bf16 is GPU-only)
-        M.CDT = jnp.float32
-        M.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
-    a.recon = a.recon and (hasattr(M, "encode") or hasattr(M, "Tokenizer"))   # the tokenizer pane needs a tokenizer
     (selftest if a.selftest else run)(a)
