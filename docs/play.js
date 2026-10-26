@@ -19,9 +19,15 @@ const SITE = 'https://maharishiva.github.io/tinywmcraft/';
 // sha256 b830227b.
 const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr';
 const q = new URLSearchParams(location.search);
-// ?model= loads another file; served from this machine, it plays docs/play.wgr, fetched fresh every time
+// ?model=iteration3 plays a model by its name, pinned like HF_MODEL, with its tutorial world, whatever the default is
+// (the Diamond Speedrun runs on iteration 3); ?model= with a URL loads that file; served from this machine, the player
+// plays docs/play.wgr, fetched fresh every time
+const NAMED = {
+  iteration3: ['https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr', 1232],
+};
+const [NAMED_MODEL, NAMED_TUT] = NAMED[q.get('model')] ?? [];
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
-const MODEL = q.get('model') ?? (LOCAL || !HF_MODEL ? 'play.wgr' : HF_MODEL);
+const MODEL = NAMED_MODEL ?? q.get('model') ?? (LOCAL || !HF_MODEL ? 'play.wgr' : HF_MODEL);
 // Every world begins from a first frame the model imagines from noise at window slot 0, after a noop; the window fills
 // from slot 0 as in training, then slides. The sampler's noise is seeded (seeded.js), a new random seed for every world,
 // shown as four characters of SEED_ABC, most significant first (no I, L, O or U): ?seed=00JT (any case) opens world
@@ -617,7 +623,7 @@ async function load(url, what, keep) {  // fetch with a progress bar; keep: from
 }
 
 async function main() {
-  reset(SEED ?? (learn ? TUT_SEED : undefined));   // the first world: the one asked for, the tutorial's, or a random one
+  reset(SEED ?? (learn ? NAMED_TUT ?? TUT_SEED : undefined));   // the first world: the one asked for, the tutorial's, or a random one
   stage = 'loading the model';
   const model = await load(MODEL, 'world model', !LOCAL && /^https:\/\//.test(MODEL));   // pinned URLs are cached
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');

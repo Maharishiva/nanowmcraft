@@ -5,7 +5,7 @@ The fastest run posted before **24 December 2026, 23:59 PST** wins a paper copy 
 
 ## What counts
 
-- A diamond in the inventory the model draws, in iteration 3 as the site plays it: [`web/play.wgr` at 00e272c](https://huggingface.co/maharishiva/tinywmcraft-v3/blob/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr) on Hugging Face. If a newer model replaces it on the site before the deadline, iteration 3 stays playable [here](https://maharishiva.github.io/tinywmcraft/?model=https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr#play) and runs on it still count.
+- A diamond in the inventory the model draws, in [iteration 3 in the player](https://maharishiva.github.io/tinywmcraft/?model=iteration3#play) (the file [`web/play.wgr` at 00e272c](https://huggingface.co/maharishiva/tinywmcraft-v3/blob/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr) on Hugging Face). The site plays it by default today; when a newer model takes over the site before the deadline, that link keeps playing iteration 3 and runs on it still count.
 - The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. That step is your time: the fewest steps win, and a tie goes to the earlier post.
 - How the model got there is the model's business. In the real game a diamond needs an iron pickaxe, which needs a furnace, coal and the rest ([the road to a diamond](https://maharishiva.github.io/tinywmcraft/#achievements)); the world model only tries to follow those rules. A diamond it hands out on its own counts too.
 - The score counter does not count. The model hands out +1s that can be farmed, which says more about the model than about you.
@@ -25,7 +25,7 @@ The clip is made by the player and carries what the maintainer needs: the site's
 
 ## What does not count
 
-- An edited video, frames inserted or cut, an edited page, or another model file (the `?model=` parameter, except the iteration 3 link above).
+- An edited video, frames inserted or cut, an edited page, or another model file (any other `?model=` than `?model=iteration3`).
 - A diamond on the map that never reaches the inventory, or one that shows on a single frame and is gone the next.
 - The real game, a recording of `play_wm.py`, or anything the player's own clip does not show.
 
