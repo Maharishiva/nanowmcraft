@@ -13,10 +13,11 @@ const GITHUB = 'github.com/Maharishiva/tinywmcraft';
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
-// The model the site plays: made by export_web.py and convert_web.py from the best checkpoint (the slot graph, inputs
-// pos, prev, kmask; fp16 weights, 23 MB; convert_web.py --int8 makes a 12 MB file that scores the same), pinned by
-// pin_web.py at a revision so the cached copy stays valid, sha256 f75bfe69.
-const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/7952f3107adbaa8b3ddc9ff3dadce4bccbedeb65/web/play.wgr';
+// The model the site plays: iteration 3 seed 2 (of the three seeds, the one that gets the crafting table right), made
+// by export_web.py and convert_web.py (the slot graph, inputs pos, prev, kmask; fp16 weights, 23 MB; convert_web.py
+// --int8 makes a 12 MB file that scores the same), pinned by pin_web.py at a revision so the cached copy stays valid,
+// sha256 b830227b.
+const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr';
 const q = new URLSearchParams(location.search);
 // ?model= loads another file; served from this machine, it plays docs/play.wgr, fetched fresh every time
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
