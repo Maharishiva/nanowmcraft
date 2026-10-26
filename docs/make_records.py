@@ -13,9 +13,9 @@ seed's row, as row n of records.jsonl (replaced if it is there). --ledger takes 
 the three-seed means against the best other row: the score margin 1.65 * sqrt((sd_best^2 + sd_new^2) / 3), reward
 AP at or above 95% of iteration 1's, done AP at or above eval.DONE_AP_FLOOR, train_s <= 600 and eval_s <= 300 for
 every seed, seeds 0, 1 and 2. Needs the repo's Python (eval.py imports jax); render does not.
-render: the rows of the README's benchmark table (the columns its header names), docs/index.html's top three,
-best score and next iteration number, and the numbers in the rules (program.md, benchmark.html): the best score
-to beat, its eval time and the reward AP floor.
+render: the rows of the README's benchmark table (the columns its header names), the README's score chart
+(docs/assets/score.svg), docs/index.html's top three, best score and next iteration number, and the numbers in the
+rules (program.md, benchmark.html): the best score to beat, its eval time and the reward AP floor.
 """
 import argparse
 import json
@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RECORDS, README, INDEX = ROOT / "docs" / "records.jsonl", ROOT / "README.md", ROOT / "docs" / "index.html"
 PROGRAM, BENCH = ROOT / "program.md", ROOT / "docs" / "benchmark.html"
+SCORE_SVG = ROOT / "docs" / "assets" / "score.svg"
 MEANS = ("score", "score_geometric", "gFVD", "logic", "memory", "memory_recall_part", "memory_self_part", "reward_ap",
          "done_ap")
 SEED_KEYS = ("score", "score_geometric", "gFVD", "gFVD_16", "logic", "memory", "memory_recall_part", "memory_self_part",
@@ -110,6 +111,39 @@ def fmt(r, col):
     return f(key, d)
 
 
+def score_svg(recs):
+    """The README's chart: each iteration's score (mean, with the sample SD as a bar) as a step line on the scale from 0
+    to the real game at 1, and an empty slot above it for the next iteration."""
+    recs = [r for r in recs if isinstance(r.get("score"), (int, float))]
+    W, H, L, R, T, B = 772, 300, 40, 104, 24, 34
+    n = len(recs) + 1
+    X = lambda i: L + 40 + i * (W - L - R - 80) / max(n - 1, 1)
+    Y = lambda v: T + (1 - v) * (H - T - B)
+    font = 'font-family=\'"JetBrains Mono","SF Mono",Menlo,Consolas,monospace\' font-size="11"'
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" {font}>',
+         f'<rect width="{W}" height="{H}" fill="#0a0a0a"/>', f'<text x="{L}" y="13" fill="#6a6a6a">score ↑</text>']
+    for v in (0, .25, .5, .75):
+        s.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" stroke="#1c1c1c"/>'
+                 f'<text x="{L - 6}" y="{Y(v) + 4:.1f}" text-anchor="end" fill="#6a6a6a">{v:g}</text>')
+    s.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(1):.1f}" y2="{Y(1):.1f}" stroke="#6a6a6a" stroke-dasharray="4 4"/>'
+             f'<text x="{L - 6}" y="{Y(1) + 4:.1f}" text-anchor="end" fill="#6a6a6a">1</text>'
+             f'<text x="{W - R + 8}" y="{Y(1) + 4:.1f}" fill="#c8c8c4">the real game</text>')
+    path = "".join((f"H{X(i):.1f}V" if i else f"M{X(i):.1f},") + f"{Y(r['score']):.1f}" for i, r in enumerate(recs))
+    s.append(f'<path d="{path}H{X(n - 1):.1f}" fill="none" stroke="#ff6a13" stroke-width="2" stroke-linejoin="round"/>')
+    for i, r in enumerate(recs):
+        x, y, sd, last = X(i), Y(r["score"]), r.get("score_sd") or 0, i == len(recs) - 1
+        s.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{Y(r["score"] - sd):.1f}" y2="{Y(r["score"] + sd):.1f}" stroke="#c8c8c4"/>'
+                 f'<rect x="{x - 3.5:.1f}" y="{y - 3.5:.1f}" width="7" height="7" fill="#ff6a13" stroke="#0a0a0a" stroke-width="1.5"/>'
+                 f'<text x="{x + 9:.1f}" y="{y - 8:.1f}" fill="{"#ff6a13" if last else "#f0f0ee"}"'
+                 f'{" font-weight=&quot;700&quot;".replace("&quot;", chr(34)) if last else ""}>{r["score"]:.3f}</text>'
+                 f'<text x="{x:.1f}" y="{H - 10}" text-anchor="middle" fill="#6a6a6a">#{r["n"]}</text>')
+    x, y, up = X(n - 1), Y(recs[-1]["score"]), Y(min(recs[-1]["score"] + 0.1, 0.97))     # the next one
+    s.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{y:.1f}" y2="{up + 4:.1f}" stroke="#ff6a13" stroke-dasharray="2 3"/>'
+             f'<rect x="{x - 3.5:.1f}" y="{up - 3.5:.1f}" width="7" height="7" fill="none" stroke="#ff6a13" stroke-width="1.5"/>'
+             f'<text x="{x:.1f}" y="{H - 10}" text-anchor="middle" fill="#ff6a13">#{recs[-1]["n"] + 1} yours?</text>')
+    SCORE_SVG.write_text("\n".join(s + ["</svg>"]) + "\n")
+
+
 def render(a):
     recs = sorted(load(), key=lambda r: r["n"])
     lines = README.read_text().split("\n")
@@ -120,6 +154,7 @@ def render(a):
         end += 1
     lines[h + 2:end] = ["| " + " | ".join(fmt(r, c) for c in cols) + " |" for r in recs]
     README.write_text("\n".join(lines))
+    score_svg(recs)
     top = sorted(recs, key=rank, reverse=True)[:3]
     who = lambda r: f'<a href="https://github.com/{r["author"]}">{r["author"]}</a>'
     lead = ' class="lead"'
