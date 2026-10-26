@@ -1,41 +1,61 @@
-"""Frozen benchmark: open-loop generation, action following, and the reward and termination heads, on 2048 fixed clips
-of held-out play.
+"""Frozen benchmark: open-loop generation scored for looks (gFVD), game logic and memory, plus the reward and
+termination heads, on fixed clips of held-out real play (built by make_eval.py).
 
-Each clip in eval.npz holds 8 real frames of context and 64 future frames, with the action, reward and death flag of
-the transition into each frame. The 1536 `normal` clips are random windows of play; each of the 512 `event` clips
-holds a rare event in its first 16 future frames: a diamond collected, a plant eaten, an iron pickaxe or sword made, a
-death in lava or by a mob. A death clip ends at the death: its frames from valid_len on are padding and never scored,
-the terminal frame counts.
+Every clip starts with 8 real frames and the action into each; the model generates one frame per action after them.
+  play    2048 windows of the data driver's play, 64 actions each; 512 hold a diamond, an iron tool, a plant eaten
+          or a death in their first 16 future frames (a death clip ends at the death; later frames are not scored).
+  logic   8 scripted actions from a real state next to something to use, in 7 families: chop, mine (with the right
+          and the wrong pickaxe), drink, eat, place, craft (with and without table, furnace or ingredients, in any
+          order), sleep. In each family the real game changed something in half of the cases, nothing in the rest.
+  memory  512 planned walks out and back (48 actions) and 256 long ones (144 actions). Recall checks: map cells seen
+          in the context that left the view and come back unchanged, on a screen tile that showed another block in the
+          last context frame. Self checks: map cells first seen in a generated frame that left the view for 4 or more
+          frames and come back unchanged, on another screen tile than the one they left from.
 
-The model is primed on the 8 real frames and generates one frame per action: 64 frames under the recorded actions, and
-16 frames under random actions with the same sampling keys.
-
-  gFVD     Frechet distance between the real and generated future frames 1-64 in the feature space of a fixed random
+Probes read generated frames with the game's own textures (stored in the data file): a HUD slot is the nearest of its
+10 templates (icon and digit), a map cell the nearest block or mob texture as rendered at the clip's light, sleep the
+gray map tint.
+  gFVD     Frechet distance between the real and generated play frames 1-64 in the feature space of a fixed random
            CNN (seed 1234, never trained) over stacks of 4 consecutive frames, times 10^4. Lower is better.
-  gFVD_16  the same over frames 1-16.
-  AF       action following: the share of clips where the rollout under the recorded actions is closer (salient-pixel
-           MSE over frames 1-16) to the real future than the rollout under random actions; ties score half. 0.5 = the
-           model ignores actions. Higher is better.
-  reward_ap / done_ap   the heads teacher-forced on the real frames, each future frame read with 8 frames of context
-           before it: average precision of |predicted reward| for the recorded reward events (|r| > 0) and of the done
-           probability for the recorded deaths, over all future transitions. reward_base / done_base are the shares of
-           positives, the score of a blind guess.
-  imagined_return_corr  the reward head read from the rollout under the recorded actions: correlation, over the normal
-           clips, of each clip's predicted reward summed over its generated frames with the recorded sum.
-  imagined_done_ap      the done head read from the same rollout: average precision of each clip's highest done
-           probability over its generated frames for the clips that end in a death; imagined_done_base is their share.
+  logic    a case passes if the HUD items (and food or drink where they are the point), the target cell and the sleep
+           tint read the same as in the real game on all 8 generated frames. Per family: pass rate where something
+           changed + pass rate where nothing changed - 1 (Youden's J; 0 for "never changes" and "always changes").
+           logic = the mean over families.
+  memory   half recall, half self-consistency, each a mean over the gap buckets (frames since the cell was last in
+           view): 4-7, 8-15, 16-31, 32-63, 64+. Gain over chance per bucket = (hit rate - chance) / (1 - chance), 0
+           where chance is 1.
+           Recall: a hit when the block the model draws for a returning cell reads as the real one. Chance is the
+           probability that the drawn block equals a random block of the last context frame.
+           Self: does the model draw a cell it invented the same way when it comes back? A hit when the block drawn
+           at the return reads the same as the block the model drew for that cell when it was last in view. A check
+           is skipped if that earlier read is a mob or if the model drew that same block at the return's screen tile
+           in that earlier frame (a frozen picture would pass it); a mob drawn at the return is a miss. Chance is the
+           probability that the block drawn at the return equals the earlier block of another self check of the
+           same clip.
+           Painting the common block, shuffling the context's tiles, copying the last frame or shifting it with the
+           actions while filling the new edge with one block or with random context blocks gains nothing.
+  reward_ap / done_ap  the heads teacher-forced on the real play frames, each future frame read with 8 frames of
+           context before it: average precision of |predicted reward| for the reward events and of the done
+           probability for the deaths. reward_base / done_base are the shares of positives.
+  score    the north star: 0.4 gFVD + 0.2 logic + 0.2 memory + 0.1 reward + 0.1 done, each part clipped to
+           [0, 1], 0 at a trivial model and 1 at the real game. gFVD part: log(GFVD_ZERO / gFVD) / log(GFVD_ZERO /
+           GFVD_ONE); GFVD_ZERO is the gFVD of copying the last context frame, GFVD_ONE the gFVD of the real game
+           itself, replayed from the same states with fresh randomness (mobs, saplings, night). Reward and done parts:
+           the AP's gain over its base rate, (AP - base) / (1 - base). score_geometric, the weighted geometric mean of
+           the same parts (each at least 1e-3), is reported for comparison and not ranked.
+  gates    judged on the three-seed means (program.md): reward AP at least REWARD_AP_FLOOR (95% of iteration 1's),
+           done AP at least DONE_AP_FLOOR. Each row's gates and eligible (both floors and the time budget met) only
+           inform about that one run; the score is never changed by them.
 
-Every metric is also reported on the normal and on the event clips alone (suffixes _normal and _event); a metric with
-no positive in its clips is null.
-
-The model is any module (default train.py) with this interface; how it generates a frame is its own business:
+The model is any module (default train.py) with this interface; how it generates a frame is its own business, and
+so is how much of the past it keeps:
   load_model(path), load_meta(path) -> {"cfg": {"seed": ...}, "train_s": ...}
   start(model, frames (B, n0, H, W, 3) uint8, actions (B, n0)) -> state       actions[t] is the action INTO frame t
   step(model, state, action (B,), key) -> (frame (B, H, W, 3) uint8, state)  one frame, never sees future actions
   heads(model, frames (B, L, H, W, 3), actions (B, L), key) -> (reward (B, L), done probability (B, L)), L = 24
 
 eval_s is timed from importing the model module to the last metric, so model loading and compilation count and
-reading eval.npz does not; it must stay within 180 s on the maintainer's A100.
+reading the data does not; it must stay within 300 s on the maintainer's A100.
 
     python eval.py --model runs/base/model.npz --tag base
 """
@@ -52,11 +72,15 @@ import jax.numpy as jnp
 import numpy as np
 
 H = W = 63
-A_N = 17
-CTX, FUT, AF_HOR, HEAD_HOR, N_CLIPS = 8, 64, 16, 16, 2048
-EVAL_SEED, BATCH, FEAT_BATCH = 0, 256, 16      # clips per rollout batch, clips per feature pass
-CLIP, FEAT_SEED, THR = 4, 1234, 16 / 255
-GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 180
+CTX, FUT, HEAD_HOR = 8, 64, 16
+EVAL_SEED, BATCH, FEAT_BATCH, PROBE_BATCH = 0, 256, 16, 2048
+CLIP, FEAT_SEED = 4, 1234
+GFVD_SCALE, TRAIN_BUDGET_S, EVAL_BUDGET_S = 1e4, 600, 300
+GFVD_ZERO, GFVD_ONE = 170.0, 14.0                  # measured on data/eval.npz (copy, replayed game)
+WEIGHTS = {"gfvd": 0.4, "logic": 0.2, "memory": 0.2, "reward": 0.1, "done": 0.1}
+REWARD_AP_FLOOR, DONE_AP_FLOOR = 0.872, 0.15
+GAPS = (4, 8, 16, 32, 64, 10 ** 4)
+GROUPS = ("play", "logic", "memory", "long")
 
 
 class FeatCNN(nnx.Module):
@@ -77,7 +101,8 @@ class FeatCNN(nnx.Module):
 def frame_features():
     """A function from frames (B, T, H, W, 3) uint8 to features (B, T, F): for every frame, the stack of CLIP frames
     ending at it (the first frame repeated before the start) through the fixed CNN, on the device."""
-    cnn = FeatCNN(nnx.Rngs(FEAT_SEED))
+    with jax.threefry_partitionable(True):
+        cnn = FeatCNN(nnx.Rngs(jax.random.key(FEAT_SEED, impl="threefry2x32")))
 
     @nnx.jit
     def run(cnn, video):
@@ -103,26 +128,51 @@ def frechet(fr, fg):
     return float(((mu_r - mu_g) ** 2).sum() + np.trace(cr) + np.trace(cg) - 2 * np.sum(np.sqrt(np.clip(eig.real, 0, None))))
 
 
-def salient_mse(pred, real, last_ctx, valid):
-    """Per clip, the squared error over the pixels of valid frames where the real future differs from the last
-    context frame."""
-    real, pred = real.astype(np.float32) / 255, pred.astype(np.float32) / 255
-    sal = (np.abs(real - last_ctx[:, None]).max(-1, keepdims=True) > THR) & valid[:, :, None, None, None]
-    return ((pred - real) ** 2 * sal).sum((1, 2, 3, 4)) / (sal.sum((1, 2, 3, 4)) + 1e-6)
-
-
 def average_precision(scores, labels):
-    """Area under the precision-recall curve: the mean precision at the rank of each positive; None without one."""
+    """Area under the stepwise precision-recall curve, grouping tied scores; None without a positive.
+    A constant score gets the base rate."""
+    scores = np.asarray(scores, np.float64).ravel()
     hits = np.asarray(labels).ravel() > 0.5
+    if scores.shape != hits.shape or not np.isfinite(scores).all():
+        raise ValueError("head scores must be finite and match the labels")
     if not hits.any():
         return None
-    hits = hits[np.argsort(-np.asarray(scores, np.float64).ravel(), kind="stable")]
-    return float(np.mean(np.cumsum(hits)[hits] / (np.flatnonzero(hits) + 1)))
+    order = np.argsort(-scores, kind="stable")
+    scores, hits = scores[order], hits[order]
+    ends = np.r_[np.flatnonzero(scores[1:] != scores[:-1]), len(scores) - 1]
+    positives = np.cumsum(hits)[ends]
+    return float(np.sum(np.diff(np.r_[0, positives]) * positives / (ends + 1)) / positives[-1])
 
 
-def corr(a, b):
-    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
-    return float(np.corrcoef(a, b)[0, 1]) if a.std() > 0 and b.std() > 0 else None
+def nearest(x, tpl):
+    """x (N, K, 7, 7, 3), tpl (N or 1, K, C, 7, 7, 3) -> (N, K) index of the nearest template (mean squared error)."""
+    return np.asarray(jnp.argmin(jnp.mean((jnp.asarray(x)[:, :, None] - jnp.asarray(tpl)) ** 2, (-1, -2, -3)), -1))
+
+
+def read_hud(frames, tpl):
+    """frames (N, H, W, 3) uint8 -> (N, 16) counts 0-9 of the HUD slots (health food drink energy sapling wood stone
+    coal iron, then diamond and the six tools) under the map."""
+    slots = lambda f: f[:, 49:].reshape(-1, 2, 7, 9, 7, 3).transpose(0, 1, 3, 2, 4, 5).reshape(-1, 18, 7, 7, 3)[:, :16]
+    return np.concatenate([nearest(slots(frames[i:i + PROBE_BATCH]).astype(np.float32), tpl[None])
+                           for i in range(0, len(frames), PROBE_BATCH)])
+
+
+def read_cells(frames, rc, light, tex, night):
+    """frames (N, H, W, 3) uint8, rc (N, 2) map cell (row 0-6, column 0-8), light (N,) -> (N,) the nearest tile class:
+    block id - 1 (0-15), then cow, zombie, skeleton, each as rendered at that light (no static above 0.5)."""
+    out = []
+    for i in range(0, len(frames), PROBE_BATCH):
+        f, r, c, d = frames[i:i + PROBE_BATCH], rc[i:i + PROBE_BATCH, 0], rc[i:i + PROBE_BATCH, 1], light[i:i + PROBE_BATCH]
+        x = f[np.arange(len(f))[:, None, None], r[:, None, None] * 7 + np.arange(7)[:, None], c[:, None, None] * 7 + np.arange(7)]
+        tpl = d[:, None, None, None, None] * tex + (1 - d[:, None, None, None, None]) * night
+        out.append(nearest(x[:, None].astype(np.float32), tpl[:, None])[:, 0])
+    return np.concatenate(out) if out else np.zeros(0, int)
+
+
+def asleep(frames):
+    """frames (N, H, W, 3) uint8 -> (N,) the map shows the sleep tint (gray, blue = red + 8)."""
+    m = frames[:, :49].astype(np.int16)
+    return (np.abs(m[..., 0] - m[..., 1]) + np.abs(m[..., 2] - m[..., 0] - 8)).mean((1, 2)) < 6
 
 
 def make_gif(real, predicted, path, k=8, scale=4):
@@ -140,12 +190,25 @@ def make_gif(real, predicted, path, k=8, scale=4):
 
 def rollout(wm, model, context, context_actions, actions, keys):
     """Frames (B, T, H, W, 3) generated one action of actions (B, T) at a time after the real context, one key each."""
-    state = wm.start(model, context, context_actions)
+    state = wm.start(model, context.copy(), context_actions.copy())
     out = []
     for action, key in zip(actions.T, keys):
         frame, state = wm.step(model, state, jnp.asarray(action), key)
         out.append(frame)
-    return np.asarray(jnp.stack(out, 1))
+    out = np.asarray(jnp.stack(out, 1))
+    if out.shape != (len(context), actions.shape[1], H, W, 3) or out.dtype != np.uint8:
+        raise ValueError("step must return one uint8 frame (B, 63, 63, 3) per action")
+    return out
+
+
+def batches(d, g):
+    """Per batch of BATCH clips of a group (the last one padded with copies of its last clip, so every call has the
+    same shape): the number of real clips, their frames and actions, and the batch's sampling key."""
+    n = len(d[f"{g}_frames"])
+    for b0 in range(0, n, BATCH):
+        key = jax.random.PRNGKey(int(np.random.SeedSequence([EVAL_SEED, GROUPS.index(g), b0]).generate_state(1)[0]))
+        idx = np.minimum(np.arange(b0, b0 + BATCH), n - 1)
+        yield min(BATCH, n - b0), d[f"{g}_frames"][idx], d[f"{g}_actions"][idx].astype(np.int32), key
 
 
 def read_heads(wm, model, frames, actions, key):
@@ -154,53 +217,138 @@ def read_heads(wm, model, frames, actions, key):
     reward, done = np.zeros((len(frames), FUT), np.float32), np.zeros((len(frames), FUT), np.float32)
     for w, s in enumerate(range(0, FUT, HEAD_HOR)):
         window = slice(s, s + CTX + HEAD_HOR)
-        r, d = wm.heads(model, frames[:, window], actions[:, window], jax.random.fold_in(key, w))
-        reward[:, s:s + HEAD_HOR], done[:, s:s + HEAD_HOR] = np.asarray(r)[:, CTX:], np.asarray(d)[:, CTX:]
+        r, d = wm.heads(model, frames[:, window].copy(), actions[:, window].copy(), jax.random.fold_in(key, w))
+        r, d = np.asarray(r), np.asarray(d)
+        if r.shape != actions[:, window].shape or d.shape != r.shape or not np.isfinite(r).all() \
+                or not np.isfinite(d).all() or ((d < 0) | (d > 1)).any() or (d[:, 0] != 0).any():
+            raise ValueError("heads must return finite (B, 24) arrays, with done in [0, 1] and done[:, 0] = 0")
+        reward[:, s:s + HEAD_HOR], done[:, s:s + HEAD_HOR] = r[:, CTX:], d[:, CTX:]
     return reward, done
 
 
-def evaluate(wm, model, clips):
-    """Both rollouts and the heads, batch by batch -> per-clip arrays, and the first clips for the gif."""
+def score_play(wm, model, d):
     features = frame_features()
-    out = {k: [] for k in ("fr", "fg", "err_true", "err_rand", "r_tf", "d_tf", "r_im", "d_im")}
+    out = {k: [] for k in ("fr", "fg", "r_tf", "d_tf")}
+    valid = CTX + np.arange(FUT)[None] < d["play_valid_len"][:, None]
     preview = None
-    for b0 in range(0, len(clips["event"]), BATCH):
-        frames, actions = clips["frames"][b0:b0 + BATCH], clips["actions"][b0:b0 + BATCH].astype(np.int32)
-        valid = clips["valid"][b0:b0 + BATCH, :AF_HOR]
-        key = jax.random.PRNGKey(int(np.random.SeedSequence([EVAL_SEED, b0]).generate_state(1)[0]))
-        kg, kt, ki = jax.random.split(key, 3)
-        keys = jax.random.split(kg, FUT)
-        context, context_actions, real = frames[:, :CTX], actions[:, :CTX], frames[:, CTX:]
-        generated = rollout(wm, model, context, context_actions, actions[:, CTX:], keys)
-        randomized = rollout(wm, model, context, context_actions, clips["random_actions"][b0:b0 + BATCH], keys[:AF_HOR])
-        last = frames[:, CTX - 1].astype(np.float32) / 255
-        out["err_true"].append(salient_mse(generated[:, :AF_HOR], real[:, :AF_HOR], last, valid))
-        out["err_rand"].append(salient_mse(randomized, real[:, :AF_HOR], last, valid))
+    for n, frames, actions, key in batches(d, "play"):
+        kg, kt = jax.random.split(key)
+        context, context_actions = frames[:, :CTX], actions[:, :CTX]
+        generated = rollout(wm, model, context, context_actions, actions[:, CTX:], jax.random.split(kg, FUT))[:n]
+        reward, done = read_heads(wm, model, frames, actions, kt)
+        real = frames[:n, CTX:]
         out["fr"].append(features(real))
         out["fg"].append(features(generated))
-        for mode, video, k in (("tf", frames, kt), ("im", np.concatenate([context, generated], 1), ki)):
-            reward, done = read_heads(wm, model, video, actions, k)     # after generation: the real future comes last
-            out[f"r_{mode}"].append(reward)
-            out[f"d_{mode}"].append(done)
+        out["r_tf"].append(reward[:n])
+        out["d_tf"].append(done[:n])
         if preview is None:
             preview = real[:8].copy(), generated[:8].copy()
-    return {k: np.concatenate(v) for k, v in out.items()}, preview
+    o = {k: np.concatenate(v) for k, v in out.items()}
+    reward, death = d["play_rewards"][:, CTX:], (d["play_dones"][:, CTX:] > 0) & valid
+    fd = lambda hi: GFVD_SCALE * frechet(o["fr"][:, :hi][valid[:, :hi]], o["fg"][:, :hi][valid[:, :hi]])
+    event = np.abs(reward[valid]) > 1e-6
+    return {"gFVD": fd(FUT), "gFVD_16": fd(16), "reward_ap": average_precision(np.abs(o["r_tf"][valid]), event),
+            "reward_base": float(event.mean()), "done_ap": average_precision(o["d_tf"][valid], death[valid]),
+            "done_base": float(death[valid].mean())}, preview
 
 
-def scores(o, clips, rows):
-    """The metrics over the clips `rows`, valid future frames only."""
-    m = clips["valid"][rows]
-    reward, death = clips["rewards"][rows, CTX:], (clips["dones"][rows, CTX:] > 0) & m
-    fd = lambda hi: GFVD_SCALE * frechet(o["fr"][rows, :hi][m[:, :hi]], o["fg"][rows, :hi][m[:, :hi]])
-    t, r = o["err_true"][rows], o["err_rand"][rows]
-    event, ends = np.abs(reward[m]) > 1e-6, death.any(1)
-    return {"gFVD": fd(FUT), "gFVD_16": fd(AF_HOR),
-            "AF": float(np.mean((r > t + 1e-8) + 0.5 * (np.abs(r - t) <= 1e-8))),
-            "reward_ap": average_precision(np.abs(o["r_tf"][rows][m]), event), "reward_base": float(event.mean()),
-            "done_ap": average_precision(o["d_tf"][rows][m], death[m]), "done_base": float(death[m].mean()),
-            "imagined_return_corr": corr((o["r_im"][rows] * m).sum(1), (reward * m).sum(1)),
-            "imagined_done_ap": average_precision(np.where(m, o["d_im"][rows], 0).max(1), ends),
-            "imagined_done_base": float(ends.mean())}
+def generate(wm, model, d, g):
+    out = []
+    for n, frames, actions, key in batches(d, g):
+        keys = jax.random.split(key, actions.shape[1] - CTX)
+        out.append(rollout(wm, model, frames[:, :CTX], actions[:, :CTX], actions[:, CTX:], keys)[:n])
+    return np.concatenate(out)
+
+
+def score_logic(wm, model, d):
+    gen = generate(wm, model, d, "logic")
+    n, L = gen.shape[:2]
+    flat = gen.reshape(n * L, H, W, 3)
+    cell = d["logic_cell"]
+    ok = ((read_hud(flat, d["hud_tpl"]).reshape(n, L, 16) == d["logic_hud"]) | ~d["logic_slots"][:, None]).all((1, 2))
+    cells = read_cells(flat, np.repeat(cell.clip(0), L, 0), d["logic_light"].ravel(), d["tile_tex"], d["tile_night"])
+    ok &= (cell[:, 0] < 0) | (cells.reshape(n, L) == d["logic_tile"]).all(1)
+    ok &= (asleep(flat).reshape(n, L) == d["logic_sleep"]).all(1)
+    fam, changed = d["logic_family"], d["logic_changed"]
+    rates = {str(f): (ok[(fam == i) & changed].mean(), ok[(fam == i) & ~changed].mean())
+             for i, f in enumerate(d["logic_families"]) if ((fam == i) & changed).any() and ((fam == i) & ~changed).any()}
+    j = {f: float(c + u - 1) for f, (c, u) in rates.items()}
+    return {"logic": float(np.mean(list(j.values()))), "logic_pass": float(ok.mean()), "logic_families": j,
+            "logic_pass_changed": {f: float(c) for f, (c, u) in rates.items()},
+            "logic_pass_unchanged": {f: float(u) for f, (c, u) in rates.items()}}
+
+
+def read_at(gen, light, d, clip, frame, rc, chunk=8192):
+    """The tile class of map cell rc (N, 2) in generated frame gen[clip, frame], read in chunks of checks."""
+    return np.concatenate([np.zeros(0, int)] + [read_cells(gen[clip[i:i + chunk], frame[i:i + chunk]], rc[i:i + chunk],
+                                                           light[clip[i:i + chunk], frame[i:i + chunk]], d["tile_tex"],
+                                                           d["tile_night"]) for i in range(0, len(clip), chunk)])
+
+
+def self_checks(gen, light, d, sc):
+    """Self checks (clip, frame back, row, column, frame last seen, its row, its column, gap): hit, chance, gap. Skipped
+    if the model's earlier read is a mob or it drew the remembered block at the return's screen tile in that earlier
+    frame (a frozen picture would pass it), so the earlier frame, drawn before the return, picks the checks; a mob
+    drawn at the return is a miss. Chance: the block drawn at the return against the earlier block of another kept
+    check of the same clip."""
+    back = read_at(gen, light, d, sc[:, 0], sc[:, 1], sc[:, 2:4])
+    then = read_at(gen, light, d, sc[:, 0], sc[:, 4], sc[:, 5:7])
+    there = read_at(gen, light, d, sc[:, 0], sc[:, 4], sc[:, 2:4])
+    ok = (then < 16) & (then != there)
+    clip, back, then, gap = sc[ok, 0], back[ok], then[ok], sc[ok, 7]
+    hit = back == then
+    _, g = np.unique(clip, return_inverse=True)
+    n, seen = np.bincount(g), np.zeros((g.max(initial=-1) + 1, 19))
+    np.add.at(seen, (g, then), 1)
+    keep = n[g] >= 2
+    chance = (seen[g, back] - hit)[keep] / (n[g][keep] - 1)
+    return hit[keep], chance, gap[keep]
+
+
+def gains(hit, chance, gap):
+    """Per gap bucket with checks: (hit rate - chance) / (1 - chance), 0 where chance is 1; hit rates; counts."""
+    bucket = np.digitize(gap, GAPS) - 1
+    names = [f"{lo}-{hi - 1}" if hi < GAPS[-1] else f"{lo}+" for lo, hi in zip(GAPS, GAPS[1:])]
+    rows = [(n, bucket == i) for i, n in enumerate(names) if (bucket == i).any()]
+    c = {n: chance[r].mean() for n, r in rows}
+    gain = {n: float((hit[r].mean() - c[n]) / (1 - c[n])) if c[n] < 1 - 1e-6 else 0.0 for n, r in rows}
+    rate = {n: float(hit[r].mean()) for n, r in rows}
+    return gain, rate, {n: float(c[n]) for n, _ in rows}, [int(r.sum()) for _, r in rows]
+
+
+def score_memory(wm, model, d):
+    """Half recall, half self-consistency. Recall of the returning cells per gap bucket and its gain over chance: the
+    probability that the block drawn equals a random block of the clip's last context frame. Self: see self_checks."""
+    hit, gap, chance, s_hit, s_gap, s_chance = [], [], [], [], [], []
+    for g in ("memory", "long"):
+        gen, ch = generate(wm, model, d, g), d[f"{g}_checks"].astype(int)
+        drawn = read_cells(gen[ch[:, 0], ch[:, 1]], ch[:, 2:4], d[f"{g}_light"][ch[:, 0], ch[:, 1]], d["tile_tex"],
+                           d["tile_night"])
+        hit.append(drawn == ch[:, 4])
+        gap.append(ch[:, 5])
+        chance.append(d[f"{g}_prior"][ch[:, 0], drawn])
+        for out, x in zip((s_hit, s_chance, s_gap), self_checks(gen, d[f"{g}_light"], d, d[f"{g}_self"].astype(int))):
+            out.append(x)
+    gain, rate, _, n = gains(*map(np.concatenate, (hit, chance, gap)))
+    s_gain, s_rate, s_chance, s_n = gains(*map(np.concatenate, (s_hit, s_chance, s_gap)))
+    recall_part = float(np.mean(list(gain.values()))) if gain else 0.0
+    self_part = float(np.mean(list(s_gain.values()))) if s_gain else 0.0
+    return {"memory": 0.5 * recall_part + 0.5 * self_part, "memory_recall_part": recall_part,
+            "memory_self_part": self_part, "memory_gain": gain, "memory_recall": rate, "memory_checks": n,
+            "memory_self_gain": s_gain, "memory_self_hit": s_rate, "memory_self_chance": s_chance, "memory_self_checks": s_n}
+
+
+def north_star(m):
+    """The score, the weighted geometric mean of the same parts (for comparison), the parts."""
+    gain = lambda ap, base: 0.0 if ap is None or base == 1 else (ap - base) / (1 - base)
+    parts = {"gfvd": np.log(GFVD_ZERO / max(m["gFVD"], 1e-9)) / np.log(GFVD_ZERO / GFVD_ONE), "logic": m["logic"],
+             "memory": m["memory"], "reward": gain(m["reward_ap"], m["reward_base"]),
+             "done": gain(m["done_ap"], m["done_base"])}
+    if not all(np.isfinite(v) for v in parts.values()):
+        raise ValueError("score parts must be finite")
+    parts = {k: float(np.clip(v, 0, 1)) for k, v in parts.items()}
+    geometric = np.exp(sum(WEIGHTS[k] * np.log(max(v, 1e-3)) for k, v in parts.items()))
+    return float(sum(WEIGHTS[k] * v for k, v in parts.items())), float(geometric), parts
 
 
 def main():
@@ -211,35 +359,39 @@ def main():
     p.add_argument("--out", type=Path, default=Path("ledger.jsonl"))
     p.add_argument("--tag")
     p.add_argument("--note", default="")
-    p.add_argument("--clips", type=int, default=0, help=f"score this many clips spread over the file, a quick check "
-                                                         f"(the benchmark scores all {N_CLIPS})")
+    p.add_argument("--every", type=int, default=1, help="score every k-th clip of each group, a quick check")
     p.add_argument("--gif", action="store_true")
     a = p.parse_args()
+    if a.every < 1:
+        p.error("--every must be positive")
     data = np.load(a.data)
-    clips = {k: data[k] for k in ("frames", "actions", "rewards", "dones", "valid_len", "event")}
-    n = len(clips["event"])
-    clips["random_actions"] = np.random.default_rng(EVAL_SEED + 7).integers(0, A_N, (n, AF_HOR)).astype(np.int32)
-    if a.clips:
-        clips = {k: v[np.linspace(0, n - 1, a.clips).round().astype(int)] for k, v in clips.items()}
-        n = a.clips
-    clips["valid"] = CTX + np.arange(FUT)[None] < clips["valid_len"][:, None]
+    d = {k: data[k] for k in data.files if k != "meta"}
+    for g in GROUPS if a.every > 1 else ():
+        n, by_clip = len(d[f"{g}_frames"]), {f"{g}_checks", f"{g}_self"}
+        d |= {k: v[::a.every] for k, v in d.items() if k.startswith(g + "_") and len(v) == n and k not in by_clip}
+        for k in by_clip & d.keys():
+            v = d[k][d[k][:, 0] % a.every == 0].copy()
+            v[:, 0] //= a.every
+            d[k] = v
     start = time.perf_counter()
     wm = importlib.import_module(a.module)
     model, meta = wm.load_model(a.model), wm.load_meta(a.model)
-    o, preview = evaluate(wm, model, clips)
-    event = clips["event"] > 0
-    groups = {"": np.arange(n), "_normal": np.flatnonzero(~event), "_event": np.flatnonzero(event)}
-    metrics = {}
-    for suffix, rows in groups.items():
-        if len(rows):
-            metrics |= {k + suffix: v for k, v in scores(o, clips, rows).items()}
-    metrics["imagined_return_corr"] = metrics.get("imagined_return_corr_normal")   # defined on the normal clips
-    eval_s = round(time.perf_counter() - start, 1)
+    if not np.isfinite(meta["train_s"]) or meta["train_s"] < 0:
+        raise ValueError("train_s must be finite and nonnegative")
+    metrics, preview = score_play(wm, model, d)
+    metrics |= score_logic(wm, model, d) | score_memory(wm, model, d)
+    score, geometric, parts = north_star(metrics)
+    elapsed = time.perf_counter() - start
+    eval_s = round(elapsed, 1)
+    clips = {g: len(d[f"{g}_frames"]) for g in GROUPS}
+    gates = {"reward_ap": (metrics["reward_ap"] or 0) >= REWARD_AP_FLOOR,
+             "done_ap": (metrics["done_ap"] or 0) >= DONE_AP_FLOOR}
+    in_budget = a.every == 1 and meta["train_s"] <= TRAIN_BUDGET_S and elapsed <= EVAL_BUDGET_S
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tag": a.tag or a.model.parent.name,
-           "note": a.note, **metrics, "train_seed": meta["cfg"]["seed"], "clips": n, "batch": BATCH,
-           "train_s": meta["train_s"], "eval_s": eval_s,
-           "in_budget": n == N_CLIPS and meta["train_s"] <= TRAIN_BUDGET_S and eval_s <= EVAL_BUDGET_S,
-           "module": a.module, "checkpoint": str(a.model)}
+           "note": a.note, "score": score, "score_geometric": geometric, "parts": parts, **metrics,
+           "train_seed": meta["cfg"]["seed"], "clips": clips, "batch": BATCH, "train_s": meta["train_s"], "eval_s": eval_s,
+           "in_budget": in_budget, "gates": gates, "eligible": in_budget and all(gates.values()),
+           "module": a.module, "checkpoint": str(a.model), "data": str(a.data)}
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open("a") as fh:
         fh.write(json.dumps(row) + "\n")

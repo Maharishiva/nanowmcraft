@@ -1,7 +1,7 @@
 """Demo GIF: one held-out episode, eight real frames of priming, then the world model free-runs on the recorded
-actions. Left pane: real Craftax. Right pane: the world model. Below: the key being pressed, drawn pixel style.
+actions. Left pane: real Craftax. Right pane: the world model. Below: the action key pressed, drawn as in the player.
 
-    python docs/make_play_gif.py --model runs/base/model.npz --style craft --out docs/assets/play.gif   # the README gif
+    python docs/make_play_gif.py --model runs/base/model.npz --style progress --steps 48 --out docs/assets/play.gif
 
 CPU is fine: one 32-frame rollout takes about a minute on a laptop.
 """
@@ -16,9 +16,7 @@ import jax
 import jax.numpy as jnp
 
 import train
-
-train.CDT = jnp.float32                                   # fp32 on CPU, as in play_wm.py
-train.MP = dict(dtype=jnp.float32, param_dtype=jnp.float32)
+from clips import streams
 
 CTX, T = 8, 32
 SCALE, U = 4, 4                                           # game pixel -> 4 px; one UI "pixel" -> 4 px
@@ -76,19 +74,42 @@ def up(frame):
     return np.repeat(np.repeat(frame, SCALE, 0), SCALE, 1)
 
 
-def rank_windows(data, style="explore"):
+def daylight(frames, tex, night, levels=np.linspace(1.0, 0.0, 11), every=4):
+    """frames (T, E, 63, 63, 3) uint8 -> (T, E) the light level whose block and mob textures (as eval.py reads them at
+    that light) fit the map tiles best, fitted on every `every`-th frame and held in between."""
+    sub = frames[::every]
+    flat, out = sub.reshape(-1, 63, 63, 3), []
+    for i in range(0, len(flat), 128):
+        x = jnp.asarray(flat[i:i + 128, :49], jnp.float32).reshape(-1, 7, 7, 9, 7, 3).transpose(0, 1, 3, 2, 4, 5)
+        x = x.reshape(-1, 63, 1, 147)
+        err = [jnp.mean(jnp.min(jnp.mean((x - (lv * tex + (1 - lv) * night).reshape(1, 1, -1, 147)) ** 2, -1), -1), -1)
+               for lv in levels]
+        out.append(levels[np.asarray(jnp.argmin(jnp.stack(err), 0))])
+    return np.repeat(np.concatenate(out).reshape(sub.shape[:2]), every, 0)[:len(frames)]
+
+
+def windows(path, style):
+    """The play streams of path and their windows, best first, in full daylight if the file has the textures."""
+    data, z = streams(path), np.load(path)
+    light = daylight(data["frames"], z["tile_tex"], z["tile_night"]) if "tile_tex" in z.files else None
+    return data, rank_windows(data, style, light)
+
+
+def rank_windows(data, style="explore", light=None):
     """Held-out windows without an episode reset, best first, one per environment, no night or sleep frames.
     explore: varied actions and a moving agent. craft: the agent stays put and crafts, places and hits things,
-    so the whole window is terrain the model has seen."""
+    so the whole window is terrain the model has seen. progress: achievements, crafts and placements, so the
+    inventory grows."""
     frames, actions, dones = data["frames"], data["actions"], data["dones"].astype(bool)
     L = CTX + T
-    bright = frames[:, :, :49].mean(axis=(2, 3, 4))                       # night and sleep darken the map
+    bright = frames[:, :, :49].mean(axis=(2, 3, 4)) if light is None else None   # night and sleep darken the map
     inv = frames[:, :, 49:].astype(np.int16)
     changed = np.abs(inv[1:] - inv[:-1]).mean(axis=(2, 3, 4)) > 0.5       # inventory strip changed t -> t+1
     best = {}
     for env in range(frames.shape[1]):
         for start in range(1, frames.shape[0] - L, 2):
-            if dones[start - 1:start + L - 1, env].any() or bright[start:start + L, env].min() < 62:
+            dark = bright[start:start + L, env].min() < 62 if light is None else light[start:start + L, env].min() < 0.9
+            if dones[start - 1:start + L - 1, env].any() or dark:
                 continue
             fut = actions[start + CTX - 1:start + L - 1, env]
             hit = changed[start + CTX - 1:start + L - 1, env]
@@ -97,7 +118,10 @@ def rank_windows(data, style="explore"):
             motion = np.abs(np.diff(clip[:, :49], axis=0)).mean()
             crafts = (np.isin(fut, [11, 12, 13, 14, 15, 16]) & hit).sum()   # a craft that actually produced an item
             places = (np.isin(fut, [7, 8, 9, 10]) & hit).sum()
-            if style == "craft":
+            if style == "progress":
+                unlocks = (data["rewards"][start + CTX - 1:start + L - 1, env] > 0.5).sum()
+                score = 3.0 * unlocks + 1.5 * min(crafts, 4) + 1.0 * min(places, 4) + 0.2 * hit.sum()
+            elif style == "craft":
                 score = 3.0 * min(crafts, 3) + 1.5 * min(places, 3) + 0.5 * hit.sum() + len(set(fut.tolist())) - 6.0 * moves
             else:
                 score = 3.0 * min(crafts, 2) + 1.5 * min(places, 2) + len(set(fut.tolist())) + 2.0 * moves + motion / 10
@@ -106,25 +130,20 @@ def rank_windows(data, style="explore"):
     return [(start, env) for env, (start, score) in sorted(best.items(), key=lambda kv: -kv[1][1])]
 
 
-def rollout(model, ctx_frames, actions, key):
-    """train.imagine without its 32-frame limit: the latent rollout slides its window, and the reward head reads
-    two 32-frame windows. Returns T imagined frames and the predicted reward for arriving at each."""
-    import flax.nnx as nnx
-    ctx = train.encode(model, jnp.asarray(ctx_frames)[None])
-    ca, fa = jnp.asarray(actions[None, :CTX], jnp.int32), jnp.asarray(actions[None, CTX:], jnp.int32)
-    gdef, state = nnx.split(model.df)
-
-    @jax.jit
-    def run(state, ctx, ca, fa, key):
-        kr, k1, k2 = jax.random.split(key, 3)
-        df = nnx.merge(gdef, state)
-        zt = train._rollout_latents(df, ctx, ca, fa.T, kr, train.STEPS, model.win).transpose(1, 0, 2, 3, 4)
-        z, acts = jnp.concatenate([ctx, zt], 1), jnp.concatenate([ca, fa], 1)
-        r_first = train._read_heads(df, z[:, :train.WIN], acts[:, :train.WIN], k1)[0][:, CTX:]
-        r_last = train._read_heads(df, z[:, -train.WIN:], acts[:, -train.WIN:], k2)[0]
-        return zt, jnp.concatenate([r_first, r_last[:, -(CTX + T - train.WIN):]], 1)
-    zt, rewards = run(state, ctx, ca, fa, key)
-    return np.asarray(train.decode(model, zt)[0]), np.asarray(rewards[0])
+def rollout(model, ctx_frames, actions, key, heads_len=24):
+    """The model through eval.py's interface (start, step, heads), so any entry works: CTX real frames prime it, then
+    it imagines T frames from the recorded actions. The predicted reward for arriving at each imagined frame comes
+    from heads() over the heads_len frames up to it, imagined ones included."""
+    state, frames = train.start(model, jnp.asarray(ctx_frames)[None], jnp.asarray(actions[None, :CTX])), list(ctx_frames)
+    for t in range(T):
+        key, k = jax.random.split(key)
+        frame, state = train.step(model, state, jnp.asarray(actions[CTX + t:CTX + t + 1]), k)
+        frames.append(np.asarray(frame)[0])
+    seq, ends = np.stack(frames), np.arange(CTX, CTX + T)
+    first = np.maximum(ends - heads_len + 1, 0)
+    reward, _ = train.heads(model, jnp.asarray(np.stack([seq[i:i + heads_len] for i in first])),
+                            jnp.asarray(np.stack([actions[i:i + heads_len] for i in first])), key)
+    return seq[CTX:], np.asarray(reward)[np.arange(T), ends - first]
 
 
 def compose(real, imagined, action, step, priming, real_reward, pred_reward):
@@ -150,27 +169,30 @@ def compose(real, imagined, action, step, priming, real_reward, pred_reward):
     key(img, kx, ky + 8 * U, "A", action == 1)
     key(img, kx + 8 * U, ky + 8 * U, "S", action == 4)
     key(img, kx + 16 * U, ky + 8 * U, "D", action == 2)
-    key(img, kx + 26 * U, ky + 8 * U, "SPACE", action == 5, w=22 * U)
+    key(img, kx + 26 * U, ky + 8 * U, "ACTION", action == 5, w=22 * U)
     other = action not in (1, 2, 3, 4, 5)
     key(img, kx + 50 * U, ky + 8 * U, KEYS[action] if other else "", other, w=9 * U)
     text(img, rx, ky + 2 * U, f"STEP {step:02d}", DIM, 3)
     text(img, rx + 24 * U, ky + 2 * U, "PRIMING" if priming else name, DIM if priming else FG, 3)
-    text(img, rx, ky + 9 * U, "PRIMING ON 8 REAL FRAMES" if priming else "SAME KEYS, NO GAME STATE", DIM, 2)
+    text(img, rx, ky + 9 * U, "PRIMING ON 8 REAL FRAMES" if priming else "SAME ACTIONS, NO GAME STATE", DIM, 2)
     return img
 
 
 def main():
+    global T
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, required=True)
     p.add_argument("--data", type=Path, default=Path("data/eval.npz"))
     p.add_argument("--out", type=Path, default=Path("docs/assets/play.gif"))
     p.add_argument("--seed", type=int, default=0, help="sampling noise of the rollout")
     p.add_argument("--rank", type=int, default=0, help="which held-out window, best first")
-    p.add_argument("--style", choices=("explore", "craft"), default="explore")
+    p.add_argument("--style", choices=("explore", "craft", "progress"), default="progress")
+    p.add_argument("--steps", type=int, default=T, help="imagined frames after the priming")
     p.add_argument("--fps", type=float, default=8.0)
     a = p.parse_args()
-    data = dict(np.load(a.data))
-    start, env = rank_windows(data, a.style)[a.rank]
+    T = a.steps
+    data, ranked = windows(a.data, a.style)
+    start, env = ranked[a.rank]
     L = CTX + T
     frames = data["frames"][start:start + L, env]
     actions = data["actions"][start - 1:start + L - 1, env].astype(np.int32)        # incoming action of each frame

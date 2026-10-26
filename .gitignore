@@ -14,3 +14,4 @@ ledger.jsonl
 docs/*.onnx
 docs/_*
 docs/*.wgr
+docs/*.wgr.*

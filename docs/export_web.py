@@ -4,19 +4,19 @@
     python docs/convert_web.py
 
 Writes docs/play.onnx (gitignored; weights stored fp16, computed in fp32). One call imagines the frame at window slot
-s (0..31) after the frames in slots 0..s-1, as train._advance does while the window fills and, at s = 31, once it is
+s (0..31) after the frames in slots 0..s-1, as train.sample does while the window fills and, at s = 31, once it is
 full (the player imagines every world's first frame from noise at slot 0, then fills the window): a pass over the 31
 past slots caches every block's temporal keys and values and every past frame's summary; 8 Euler steps as in
-train._flow_one then run only the new frame's 16 tokens against that cache, its temporal attention masked to slots
-below s and itself (kmask), exact since spatial attention is per frame and temporal attention causal (about 7 GFLOP
-per call, instead of 42 for eight full-window passes); one more new-frame pass at the context signal reads the reward,
-the summary of slot s - 1 (prev) reads the done head, and the decoder renders the frame. Past slots from s on are
-ignored, whatever they hold. A model with a step embedding (train.DF.step_embed) gets it on the Euler passes, as in
-train._flow_one; a two-frame tokenizer (train.Encoder.temporal) encodes each frame of the check with its true
-predecessor. --train picks the module that defines the model (default: the repo's train.py; its kernels.py is the one
-next to it). Needs jax2onnx, onnx and onnxruntime on top of the repo's dependencies.
+train.sample then run only the new frame's 16 tokens against that cache, its temporal attention masked to slots below
+s and itself (kmask), exact since spatial attention is per frame and temporal attention causal (about 7 GFLOP per
+call, instead of 42 for eight full-window passes); one more new-frame pass at the context signal reads the reward,
+the summary of slot s - 1 (prev) reads the done head, and the tokenizer's decoder renders the frame. Past slots from
+s on are ignored, whatever they hold. The graph is train.py's model written out in plain operations (no Pallas, no
+bf16); the check compares it with the training code's own sampler run in fp32. --train picks the module that defines
+the model (default: the repo's train.py; its kernels.py is the one next to it). Needs jax2onnx, onnx and onnxruntime
+on top of the repo's dependencies.
 
-play.onnx   in   past f32 [1,31,4,4,32] (tau*z + (1-tau)*eps where tau > 0.5, else z), tau f32 [1,31],
+play.onnx   in   past f32 [1,31,4,4,32] (tau*z + (1-tau)*eps), tau f32 [1,31],
                  act i32 [1,32] (incoming action of each past slot, then the new action), noise, rnoise f32 [1,4,4,32],
                  pos f32 [1,32] (one-hot of s), prev f32 [1,31] (one-hot of s - 1, zeros at s = 0),
                  kmask f32 [1,32] (0 for past slots below s and for index 31, the new frame itself; -1e30 elsewhere)
@@ -35,6 +35,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from clips import streams
 
 def _load_train():
     """The module given by --train (read before the full argument parse: everything below depends on it)."""
@@ -49,21 +50,42 @@ def _load_train():
 
 
 train = _load_train()
-import kernels  # noqa: E402  (the train module's)
+MASKED = -1e30
 
-train.CDT, train.MP = jnp.float32, dict(dtype=jnp.float32, param_dtype=jnp.float32)  # fp32 on CPU, as play_wm.py
+
+class _F32:
+    """train's jax.numpy with bfloat16 read as float32, for fp32() below."""
+    bfloat16 = jnp.float32
+
+    def __getattr__(self, name):
+        return getattr(jnp, name)
+
+
+def fp32(model):
+    """The training code in fp32 on CPU: train.py makes its layers bf16 for the GPU and casts to bf16 in places; here
+    every layer computes in fp32 and the casts are to fp32, the precision of the browser."""
+    train.jnp = _F32()
+    for _, m in nnx.iter_graph(model):
+        if isinstance(m, nnx.Module) and getattr(m, "dtype", None) is not None:
+            m.dtype = jnp.float32
+
+
 jax.config.update("jax_default_matmul_precision", "highest")
-PAST, G = train.WIN - 1, train.GLAT * train.GLAT
+PAST, G, TOK = train.WIN - 1, train.LAT * train.LAT, train.TOK
 
 
 def gelu(x):
-    """jax.nn.gelu (tanh), what kernels.gelu and nnx.gelu compute off GPU, written out as plain ops."""
+    """jax.nn.gelu (tanh), what nnx.gelu computes, written out as plain ops."""
     return x * (0.5 * (1.0 + jnp.tanh(np.float32(np.sqrt(2 / np.pi)) * (x + 0.044715 * (x * x * x)))))
 
 
-def norm(h, scale, shift):
-    """kernels.norm_mod off GPU."""
-    return h * jax.lax.rsqrt(jnp.mean(h * h, -1, keepdims=True) + kernels.EPS) * (1.0 + scale) + shift
+def rms(x, eps=1e-6):
+    return x * jax.lax.rsqrt(jnp.mean(x * x, -1, keepdims=True) + eps)
+
+
+def mlp(seq, x):
+    """nnx.Sequential(Linear, gelu, Linear) with gelu as above."""
+    return seq.layers[2](gelu(seq.layers[0](x)))
 
 
 def heads(x, n=train.HEADS):
@@ -71,89 +93,105 @@ def heads(x, n=train.HEADS):
 
 
 def attend(q, k, v, causal=False, kmask=None):
-    """kernels.attention off GPU, on split heads: q (..., Lq, heads, hd) with its bias added, k and v (..., Lk, heads,
-    hd); kmask (1, Lk), added to the scores of every query."""
+    """kernels.attention off GPU, on split heads: q (..., Lq, heads, hd), k and v (..., Lk, heads, hd); kmask (1, Lk),
+    added to the scores of every query."""
     s = jnp.einsum("...qhd,...khd->...hqk", q * q.shape[-1] ** -0.5, k)
     if causal:
-        s = jnp.where(np.tril(np.ones(s.shape[-2:], bool)), s, kernels.MASKED)
+        s = jnp.where(np.tril(np.ones(s.shape[-2:], bool)), s, MASKED)
     if kmask is not None:
         s = s + kmask.reshape((1,) * (s.ndim - 1) + kmask.shape[-1:])
     return jnp.einsum("...hqk,...khd->...qhd", jax.nn.softmax(s, -1), v)
 
 
-def decode(dec, z):
-    """train.Decoder on one latent (1, GLAT, GLAT, TOK), with gelu and attention as above -> (H, W, 3) in [0, 1]."""
-    h = gelu(dec.inp(z))
-    for r in dec.lo:
-        h = h + r.c2(gelu(r.n2(r.c1(gelu(r.n1(h))))))
-    h = gelu(dec.up(h))
-    for t in dec.hi:                                  # TBlock: its attention's query bias is zero
-        h = h + t.pos[...]
-        qkv = t.qkv(t.n1(h)).reshape((1, -1, 3 * h.shape[-1]))
-        q, k, v = (heads(x, train.THEADS) for x in jnp.split(qkv, 3, -1))
-        h = h + t.o(attend(q, k, v).reshape(h.shape))
-        h = h + t.m2(gelu(t.m1(t.n2(h))))
-    return jax.nn.sigmoid(train._untile(dec.out(h)))[0]
+def tile_block(t, h):
+    """train.TileBlock on h (1, 9, 9, CH)."""
+    h = h + t.pos[...]
+    qkv = t.qkv(t.n1.scale[...] * rms(h, t.n1.epsilon)).reshape((1, -1, 3 * h.shape[-1]))
+    q, k, v = (heads(x) for x in jnp.split(qkv, 3, -1))
+    h = h + t.o(attend(q, k, v).reshape(h.shape))
+    return h + mlp(t.mlp, t.n2.scale[...] * rms(h, t.n2.epsilon))
+
+
+def res_block(r, h):
+    """train.ResBlock."""
+    h1 = r.c1(gelu(r.n1.scale[...] * rms(h, r.n1.epsilon)))
+    return h + r.c2(gelu(r.n2.scale[...] * rms(h1, r.n2.epsilon)))
+
+
+def decode(tok, z):
+    """train.Tokenizer.decode of one latent (1, LAT, LAT, TOK) -> (H, W, 3) in [0, 1]."""
+    h = z * tok.std[...] + tok.mean[...]
+    for layer in tok.dec.layers:
+        if isinstance(layer, train.ResBlock):
+            h = res_block(layer, h)
+        elif isinstance(layer, train.TileBlock):
+            h = tile_block(layer, h)
+        else:
+            h = layer(h) if isinstance(layer, nnx.Module) else gelu(h)
+    CH, T, n = h.shape[-1], train.TILE, train.GRID
+    x = jnp.einsum("abcd,de->abce", h, tok.tile[...].transpose(2, 0, 1, 3).reshape(CH, -1)) + jnp.tile(tok.bias[...], T * T)
+    return jax.nn.sigmoid(x).reshape(1, n, n, T, T, 3).swapaxes(2, 3).reshape(train.H, train.W, 3)
 
 
 def block(b, h, cond, cache=None, kmask=None):
     """train.Block on h (1, L, G, D). Without a cache, causal temporal attention over the L frames; with the past's
     temporal (k, v) (1, G, PAST, HEADS, D / HEADS), h is the new frame and attends to the past slots kmask keeps plus
     itself. Returns h and this block's temporal (k, v)."""
-    ss, sh, sg, ts, th, tg, ms, mh, mg = jnp.split(b.mod(cond)[:, :, None, :], 9, -1)
-    q, k, v = jnp.split(b.sqkv(norm(h, ss, sh)), 3, -1)
-    h = h + sg * b.so(attend(heads(q + b.sq_bias[...]), heads(k), heads(v)).reshape(h.shape))
-    q, k, v = jnp.split(b.tqkv(norm(h, ts, th)), 3, -1)
-    q, k, v = (heads(x).swapaxes(1, 2) for x in (q + b.tq_bias[...], k, v))    # (1, G, L, HEADS, D / HEADS)
+    s1, b1, g1, s2, b2, g2, s3, b3, g3 = jnp.split(b.mod(cond)[:, :, None], 9, -1)
+    x = rms(h) * (1 + s1) + b1
+    q, k, v = jnp.split(b.space.qkv(x), 3, -1)
+    h = h + g1 * b.space.out(attend(heads(q), heads(k), heads(v)).reshape(h.shape))
+    x = rms(h) * (1 + s2) + b2
+    q, k, v = (heads(t).swapaxes(1, 2) for t in jnp.split(b.time.qkv(x), 3, -1))    # (1, G, L, HEADS, D / HEADS)
     kc, vc = (k, v) if cache is None else (jnp.concatenate([cache[0], k], 2), jnp.concatenate([cache[1], v], 2))
-    h = h + tg * b.to(attend(q, kc, vc, cache is None, kmask).swapaxes(1, 2).reshape(h.shape))
-    return h + mg * b.m2(gelu(b.m1(norm(h, ms, mh)))), (k, v)
+    h = h + g2 * b.time.out(attend(q, kc, vc, cache is None, kmask).swapaxes(1, 2).reshape(h.shape))
+    x = rms(h) * (1 + s3) + b3
+    return h + g3 * mlp(b.mlp, x), (k, v)
 
 
 def make_step(model):
     """(past, tau, act, noise, rnoise, pos, prev, kmask) -> (z, rgb, reward, done), the contract above, in plain jnp."""
-    df = model.df
-    aemb = lambda a: jnp.take(df.aemb.embedding[...], a, axis=0)   # a gather, equal to DF.action_embed's matmul
-    step_embed = getattr(df, "step_embed", None)
+    wm = model.wm
+    aemb = lambda a: jnp.take(wm.act.embedding[...], a, axis=0)   # a gather, equal to WorldModel.embed's matmul
+    freqs = np.exp(np.linspace(0.0, np.log(1000.0), train.D // 2)).astype(np.float32)
 
     def embed(x, tau, a, tpos, delta=0.0):
-        """train.DF.forward up to the blocks for frames x (1, L, GLAT, GLAT, TOK) with temporal position embeddings
-        tpos (1, L, 1, D); delta is the Euler step size the model is told about (DF.forward's 8 * delta * step_embed,
-        zero for the past)."""
-        ae = aemb(a)
-        h = df.inp(x.reshape(x.shape[:2] + (G, train.TOK))) + df.spos[...] + tpos + ae[:, :, None]
-        cond = df.taulin(train._tau_embed(tau.reshape(-1), train.D)).reshape(ae.shape) + ae
-        if step_embed is not None and delta:
-            cond = cond + 8.0 * delta * step_embed[...]
-        return h, cond
+        """train.WorldModel.__call__ up to the blocks for frames x (1, L, LAT, LAT, TOK) at levels tau (1, L) with
+        temporal position embeddings tpos (L, 1, D); delta is the Euler step size the model is told about."""
+        ae, f = aemb(a), tau[..., None] * freqs
+        cond = wm.level(jnp.concatenate([jnp.sin(f), jnp.cos(f)], -1)) + ae
+        if delta:
+            cond = cond + train.STEPS * delta * wm.step[...]
+        return wm.inp(x.reshape(x.shape[:2] + (G, TOK))) + tpos + wm.spos[...] + ae[:, :, None], cond
 
     def step(past, tau, act, noise, rnoise, pos, prev, kmask):
-        h, cond = embed(past, tau, act[:, :PAST], df.tpos[...][:, :PAST])
+        h, cond = embed(past, tau, act[:, :PAST], wm.tpos[...][:PAST])
         cache = []
-        for b in df.blocks:
+        for b in wm.blocks:
             h, kv = block(b, h, cond)
             cache.append(kv)
         # the summary of slot s - 1 and slot s's position embedding, as one-hot contractions in the form of the dense
         # layers (convert_web.py's 'abcd,de->abce')
-        s_past = jnp.einsum("abcd,de->abce", prev[:, None, None], df.outn(h).mean(2)[0])[:, 0, 0]
-        tpos_new = jnp.einsum("abcd,de->abce", pos[:, None, None], df.tpos[...][0, :train.WIN, 0]).swapaxes(1, 2)
+        s_past = jnp.einsum("abcd,de->abce", prev[:, None, None], rms(h).mean(2)[0])[:, 0, 0]
+        tpos_new = jnp.einsum("abcd,de->abce", pos[:, None, None], wm.tpos[...][:, 0])[0]
 
         def new_frame(z, level, delta=0.0):
             h, cond = embed(z[:, None], jnp.full((1, 1), level), act[:, PAST:], tpos_new, delta)
-            for b, kv in zip(df.blocks, cache):
+            for b, kv in zip(wm.blocks, cache):
                 h = block(b, h, cond, kv, kmask)[0]
-            h = df.outn(h)
-            return df.out(h).reshape(z.shape), h.mean(2)[:, 0]
+            h = rms(h)
+            return wm.out(h).reshape(z.shape), h.mean(2)[:, 0]
 
         z, dt = noise, 1.0 / train.STEPS
-        for i in range(train.STEPS):                 # train._flow_one's update
-            z = z + dt * (new_frame(z, i * dt, dt)[0] - z) / max(1.0 - i * dt, 1e-4)
+        for i in range(train.STEPS):                 # train.sample's update
+            z = z + dt * (new_frame(z, i * dt, dt)[0] - z) / (1.0 - i * dt)
         s_new = new_frame(train.CTX_SIGNAL * z + (1.0 - train.CTX_SIGNAL) * rnoise, train.CTX_SIGNAL)[1]
         bins = np.linspace(-train.RLIM, train.RLIM, train.RBINS, dtype=np.float32)
-        reward = train._symexp(jnp.sum(jax.nn.softmax(df.rew2(gelu(df.rew1(s_new))), -1) * bins, -1))
-        done = jax.nn.sigmoid(df.done2(gelu(df.done1(jnp.concatenate([s_past, aemb(act[:, PAST])], -1))))[:, 0])
-        img = decode(model.dec, z * df.zstd[...] + df.zmean[...])
-        return z, jnp.clip(img * 255.0, 0, 255).astype(jnp.uint8), reward, done
+        r = jnp.sum(jax.nn.softmax(mlp(wm.reward, s_new), -1) * bins, -1)
+        reward = jnp.sign(r) * (jnp.exp(jnp.abs(r)) - 1.0)
+        done = jax.nn.sigmoid(mlp(wm.done, jnp.concatenate([s_past, aemb(act[:, PAST])], -1))[:, 0])
+        img = decode(model.tok, z)
+        return z, jnp.clip(img * 255.0 + 0.5, 0, 255).astype(jnp.uint8), reward, done   # rounded, as train.step
     return step
 
 
@@ -193,17 +231,23 @@ def pick_starts(data, n, seed=0):
     return [(e, t) for _, e, t in sorted(best, reverse=True)[:n]]
 
 
+def any_window(data):
+    """(env, last frame) of the first window of PAST frames, and the frame before them, inside one episode: the check's
+    window when pick_starts finds none (clips that start mid-episode, at night)."""
+    D = data["dones"]
+    return next((e, t) for e in range(D.shape[1]) for t in range(PAST, D.shape[0]) if not D[t - PAST:t, e].any())
+
+
 def latents(model, data, picks):
-    """Standardized latents (N, PAST, GLAT, GLAT, TOK) of the PAST frames up to each (env, t): encoded with one more
-    frame in front and that one dropped, so a two-frame tokenizer sees every frame's true predecessor (pick_starts
-    keeps the frame before the window in the same episode)."""
-    frames = np.stack([data["frames"][t - PAST:t + 1, e] for e, t in picks])
-    return np.asarray(train.encode(model, frames))[:, 1:]
+    """Standardized latents (N, PAST, LAT, LAT, TOK) of the PAST frames up to each (env, t)."""
+    frames = np.stack([data["frames"][t - PAST + 1:t + 1, e] for e, t in picks])
+    return np.asarray(model.tok.encode(jnp.asarray(frames)))
 
 
-SPECS = dict(past=((1, PAST, train.GLAT, train.GLAT, train.TOK), jnp.float32), tau=((1, PAST), jnp.float32),
-             act=((1, train.WIN), jnp.int32), noise=((1, train.GLAT, train.GLAT, train.TOK), jnp.float32),
-             rnoise=((1, train.GLAT, train.GLAT, train.TOK), jnp.float32), pos=((1, train.WIN), jnp.float32),
+LATENT = (1, train.LAT, train.LAT, TOK)
+SPECS = dict(past=((1, PAST) + LATENT[1:], jnp.float32), tau=((1, PAST), jnp.float32),
+             act=((1, train.WIN), jnp.int32), noise=(LATENT, jnp.float32),
+             rnoise=(LATENT, jnp.float32), pos=((1, train.WIN), jnp.float32),
              prev=((1, PAST), jnp.float32), kmask=((1, train.WIN), jnp.float32))
 
 
@@ -212,7 +256,7 @@ def slot_inputs(s):
     pos, prev = np.eye(train.WIN, dtype=np.float32)[s][None], np.zeros((1, PAST), np.float32)
     if s:
         prev[0, s - 1] = 1.0
-    kmask = np.where((np.arange(train.WIN) < s) | (np.arange(train.WIN) == PAST), 0.0, kernels.MASKED)
+    kmask = np.where((np.arange(train.WIN) < s) | (np.arange(train.WIN) == PAST), 0.0, MASKED)
     return dict(pos=pos, prev=prev, kmask=kmask.astype(np.float32)[None])
 
 
@@ -220,7 +264,7 @@ def half_weights(model, min_size=1024):
     """Round every matrix-sized weight to fp16 (in place), so that the fp16 file computes exactly what the JAX
     reference with these weights computes."""
     half = lambda w: w.astype(jnp.float16).astype(w.dtype) if w.size >= min_size else w
-    for mod in (model.df, model.dec):
+    for mod in (model.wm, model.tok):
         nnx.update(mod, jax.tree.map(half, nnx.state(mod)))
 
 
@@ -294,18 +338,18 @@ def export(model, path, min_size=1024):
 
 
 def reference(model, past, tau, act, noise, s):
-    """The new latent at window slot s as the training code computes it (train._advance: the window holds the frames
-    of slots 0..s-1, train.DF.forward with its temporal cache and step size), from the same corrupted past and noise."""
-    df, dt = model.df, 1.0 / train.STEPS
+    """The new latent at window slot s as the training code computes it (train.sample: the window holds the frames of
+    slots 0..s-1, one pass caches their temporal keys and values, then the Euler steps run train.WorldModel on slot s
+    against that cache with the step size), from the same corrupted past and noise."""
+    wm, dt = model.wm, 1.0 / train.STEPS
     seq = jnp.zeros((1, train.WIN) + past.shape[2:]).at[:, :s].set(past[:, :s])
     taus = jnp.zeros((1, train.WIN)).at[:, :s].set(tau[:, :s])
     aseq = jnp.zeros((1, train.WIN), jnp.int32).at[:, :s].set(act[:, :s]).at[:, s].set(act[:, PAST])
-    caches = df.forward(seq, taus, aseq, cache=True)
-    x1 = lambda z, level: df.forward(z[:, None], jnp.full((1, 1), level), aseq[:, s:s + 1], caches=caches, slot=s,
-                                     delta=dt)[0][:, 0]
+    cache = wm(seq, taus, aseq)[2]
     z = noise
     for i in range(train.STEPS):
-        z = z + dt * (x1(z, i * dt) - z) / max(1.0 - i * dt, 1e-4)
+        x1 = wm(z[:, None], jnp.full((1, 1), i * dt), aseq[:, s:s + 1], cache, s, dt)[0][:, 0]
+        z = z + (x1 - z) / (train.STEPS * (1.0 - i * dt))
     return z
 
 
@@ -322,12 +366,12 @@ def check(model, path, data, pick, slots=(0, 1, 7, 30, 31)):
     for s in slots:
         past = np.where(np.arange(PAST)[None, :, None, None, None] < s, real, rng.standard_normal(real.shape))
         inp = dict(past=past.astype(np.float32), tau=(np.arange(PAST) < s).astype(np.float32)[None],
-                   act=np.r_[np.where(np.arange(PAST) < s, acts, rng.integers(0, train.A_N, PAST)), 2].astype(np.int32)[None],
+                   act=np.r_[np.where(np.arange(PAST) < s, acts, rng.integers(0, train.ACTIONS, PAST)), 2].astype(np.int32)[None],
                    noise=rng.standard_normal(SPECS["noise"][0], np.float32),
                    rnoise=rng.standard_normal(SPECS["rnoise"][0], np.float32), **slot_inputs(s))
         out, jx = sess.run(None, inp), step(*inp.values())
         z = ref(inp["past"], inp["tau"], inp["act"], inp["noise"], s)
-        rgb = train.decode(model, z)[0]              # its own jit, outside the ones above
+        rgb = np.round(np.asarray(model.tok.decode(z))[0] * 255).astype(np.uint8)   # as train.step
         print(f"slot {s:2d}  onnx vs jax: " + "  ".join(f"{k} {diff(a, b):.1e}" for k, a, b in zip(["z", "rgb", "reward", "done"], out, jx))
               + f"   jax vs train's sampler: z {diff(jx[0], z):.1e}  rgb {diff(jx[1], rgb):.0f} / 255, "
               f"{np.mean(np.asarray(jx[1]) != np.asarray(rgb)):.2%} of values differ")
@@ -337,11 +381,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, default=Path("runs/base/model.npz"))
     p.add_argument("--train", type=Path, help="the module that defines the model (read before this parse)")
-    p.add_argument("--data", type=Path, default=Path("data/eval.npz"), help="held-out episodes for the check")
+    p.add_argument("--data", type=Path, default=Path("data/eval.npz"), help="held-out play for the check (clips.py)")
     p.add_argument("--copy", type=Path, help="also copy play.onnx here")
     a = p.parse_args()
-    docs, model, data = Path(__file__).resolve().parent, train.load_model(a.model), dict(np.load(a.data))
-    pick = pick_starts(data, 1)[0]
+    docs, model, data = Path(__file__).resolve().parent, train.load_model(a.model), streams(a.data)
+    pick = (pick_starts(data, 1) or [any_window(data)])[0]
+    fp32(model)
     half_weights(model)
     export(model, docs / "play.onnx")
     print(f"play.onnx: {(docs / 'play.onnx').stat().st_size / 1e6:.1f} MB")

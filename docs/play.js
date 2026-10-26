@@ -13,9 +13,10 @@ const GITHUB = 'github.com/Maharishiva/tinywmcraft';
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
 const SITE = 'https://maharishiva.github.io/tinywmcraft/';
-// The model the site plays: play.wgr made by export_web.py and convert_web.py from the best checkpoint, at a pinned
-// revision so the cached copy stays valid. It is the slot graph (inputs pos, prev, kmask), sha256 70a2ef1c.
-const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft/resolve/68a61736aba7de231574b7cfef62cf50591e02d1/web/play.wgr';
+// The model the site plays: made by export_web.py and convert_web.py from the best checkpoint (the slot graph, inputs
+// pos, prev, kmask; fp16 weights, 23 MB; convert_web.py --int8 makes a 12 MB file that scores the same), pinned by
+// pin_web.py at a revision so the cached copy stays valid, sha256 f75bfe69.
+const HF_MODEL = 'https://huggingface.co/maharishiva/tinywmcraft-v3/resolve/7952f3107adbaa8b3ddc9ff3dadce4bccbedeb65/web/play.wgr';
 const q = new URLSearchParams(location.search);
 // ?model= loads another file; served from this machine, it plays docs/play.wgr, fetched fresh every time
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) || location.protocol === 'file:';
@@ -32,11 +33,11 @@ const parseSeed = c => {   // a seed code as its number; null if it is not one
 };
 const SEED = parseSeed(q.get('seed'));        // the world asked for; none or an invalid code: a random one
 const REROLL = 20;                             // imagined first frames tried at most: the next seed until one is fresh
-// The tutorial's world, the first one on a first visit (?tut=1 or ?tut=a, ?tut=b: again, in look a or b): seed 00JT,
-// bright day, nothing held, a short row of trees straight up from two tiles away over open grass; the walkthrough is
-// done in 5 steps at best (up, chop, up, chop, table; a second chop at the first tree gives nothing). Picked from the
-// imagined first frames of 1500 seeds. Pick another one if the model changes.
-const TUT_SEED = 602;
+// The tutorial's world, the first one on a first visit (?tut=1 or ?tut=a, ?tut=b: again, in look a or b): bright day,
+// nothing held, a tree two tiles away over open grass, the walkthrough done in about 5 steps (walk, chop, chop, table).
+// A seed gives another world with every model file: pick it with seeds.html from the first frames of 1500 seeds, and
+// pin_web.py writes it here with the file.
+const TUT_SEED = 1232;
 const TUT = q.get('tut'), LOOK = TUT === 'b' ? 'b' : 'a';
 const SLEEP_MAX = 400;                         // steps skipped in one sleep at most
 const SLEEP_STEP_MS = 60, SLEEP_SHOW_MS = 1500; // skipped steps at most ~16 a second; the sleep banner stays at least 1.5 s
