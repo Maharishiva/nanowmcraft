@@ -65,7 +65,7 @@ Exploratory runs can use any GPU and any seed; timings from other GPUs are only 
 
 ## Open problems
 
-- **Game logic.** Crafting is the hardest logic family: repeat crafts, iron tools without a furnace, the wrong pickaxe. A model that gets the rules right scores better, and makes the [challenge](https://maharishiva.github.io/tinywmcraft/#challenge) in the browser fairer.
+- **Game logic.** Crafting is the hardest logic family: repeat crafts, iron tools without a furnace, the wrong pickaxe. A model that gets the rules right scores better, and makes the [Diamond Speedrun](https://maharishiva.github.io/tinywmcraft/#speedrun) in the browser fairer.
 - **Memory.** Every model so far draws a cell that comes back after 16 or more frames no better than chance. The context length is yours; the long walks reward a model that remembers.
 - **Cheaper sampling.** Eight Euler steps per frame. Fewer steps, better solvers, distillation, or a model that is not flow matching at all could free eval time and let a bigger model train.
 - **Long horizons.** The benchmark scores up to 144 frames; the browser plays endless generated worlds. Anything that keeps the world coherent longer shows in the player first.
