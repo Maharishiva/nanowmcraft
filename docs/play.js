@@ -8,7 +8,7 @@ import { tutorial } from './tutorial.js';
 import { asleep } from './sleep.js';
 import { noise, PAST, NOISE_BUF, RNOISE } from './seeded.js';
 
-const X_HANDLE = '';   // the X handle the diamond caption ends with, when set
+const X_HANDLE = 'rldoeswork';   // the X handle both share captions end with ("via @..."), when set
 const GITHUB = 'github.com/Maharishiva/tinywmcraft';
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
@@ -537,7 +537,7 @@ async function save() {  // a download; on iPhones and iPads the share sheet ins
 
 async function share() {  // phones: the clip to the share sheet, its caption to the clipboard; computers: a post on X with the
   // caption, the clip downloaded to attach
-  const handle = X_HANDLE && ' @' + X_HANDLE.replace(/^@/, '');
+  const handle = X_HANDLE && ' via @' + X_HANDLE.replace(/^@/, '');
   const text = diamond
     ? `I got a diamond inside a world model trained in under 10 minutes for $0.1 of compute. Every frame is generated ` +
       `by a neural network on my GPU. ${SITE} ${GITHUB}${handle}`
