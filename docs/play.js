@@ -79,7 +79,7 @@ const GRID = {
   right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3] },
 };
 const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'ACTION']];
-const READY = TOUCH ? 'Tap the map to walk' : 'WASD to move, SPACE to act';   // after the tutorial
+const READY = 'WASD to move, SPACE to act';   // after the tutorial, on keyboards only
 const ICONS = [8, 7, 9, 10, 6, 0, 11, 12, 13, 14, 15, 16];
 const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111',
@@ -350,7 +350,8 @@ async function dream() {
 }
 
 let tips = 0;   // moves the short hint stays before the status line shows what each move did
-function greet() {  // the short hint, big
+function greet() {  // the short hint, big; none on touch screens
+  if (TOUCH) return;
   status(READY, true);
   st.classList.add('big');
   tips = 12;

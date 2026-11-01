@@ -50,7 +50,7 @@ a.more { display:inline-block; margin:6px 0 0; }
 .cta { font-size:16px; line-height:1.45; margin:20px 0 12px; } .cta #best { color:var(--o); }
 figure { margin:22px 0; }
 figure img { display:block; max-width:100%; height:auto; margin:0 auto; }
-figure.wide img { width:min(135%, calc(100vw - 32px)); max-width:none; margin-left:50%; transform:translateX(-50%); }
+figure.wide img { width:min(135%, calc(100vw - 32px)); max-width:none; margin-left:calc((100% - min(135%, 100vw - 32px)) / 2); }
 img.ico { display:inline; width:21px; height:21px; vertical-align:-5px; image-rendering:pixelated; }
 img.px { image-rendering:pixelated; }
 figcaption, .note { color:var(--mid); font-size:12px; line-height:1.5; margin-top:8px; }
@@ -86,6 +86,7 @@ img.crown { width:24px; height:auto; margin-right:6px; vertical-align:-3px; imag
 .cc-foot button { font:inherit; font-size:12px; color:var(--bg); background:var(--o); border:0; border-radius:0; padding:5px 14px; cursor:pointer; }
 .cc-foot button:hover { background:var(--fg); }
 footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; border-top:1px solid var(--line); }
+@media (max-width:820px) { main { overflow-x:clip; } }
 @media (max-width:560px) {
   body { font-size:13.5px; }
   main { padding:24px 16px 44px; }
