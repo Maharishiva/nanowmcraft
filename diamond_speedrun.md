@@ -14,7 +14,7 @@ The fastest run posted before **24 December 2026, 23:59 PST** wins a paper copy 
 
 1. With the diamond in the inventory, press **save clip**. The player writes the run as an MP4 (the last 3000 steps at most). On iPhones and iPads the share sheet opens instead; Save Video puts the clip in Photos.
 2. Post the clip in the [Diamond Speedrun discussion](https://github.com/Maharishiva/tinywmcraft/discussions/9): drag the MP4 into a comment and write the seed (it is on the clip), the step the diamond came on, your browser and GPU, and the link to your X post.
-3. Post it on X too, with a link to this repo and a tag for [@rldoeswork](https://x.com/rldoeswork): **share** writes the caption for you. A run needs both posts; it is judged in the discussion.
+3. Post it on X too: the clip as a video, a link to this repo and a tag for [@rldoeswork](https://x.com/rldoeswork). **share** writes the caption and hands you the clip. A run needs both posts; it is judged in the discussion.
 
 ## How it is checked
 
