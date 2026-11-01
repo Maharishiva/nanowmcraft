@@ -12,6 +12,7 @@
 #play .msg:has(.end) { justify-content: flex-start; background: none; }
 #play .end { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: calc(34 * var(--px, 5px)); }
 #play .msg span { color: #8a8a8a; font-size: 11px; }
+#play .msg img.demo { width: 100%; max-width: 560px; height: auto; }   /* no WebGPU: play.gif instead of the game */
 #play .msg button { height: 48px; padding: 0 10px; font: inherit; color: inherit; background: #1c1c1e;
   border: 2px solid #3a3a3e; border-radius: 0; cursor: pointer; }
 #play .msg .hot { background: #ff6a13; border-color: #ff6a13; color: #0a0a0a; }

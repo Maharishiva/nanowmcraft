@@ -113,13 +113,13 @@ The frozen evaluator ([eval.py](eval.py), clips built by [make_eval.py](make_eva
 ## Diamond Speedrun
 
 Get a diamond inside the world model: in the [browser player](https://maharishiva.github.io/tinywmcraft/#play), not in the real game.
-The fastest run posted before 24 December 2026 (PST) wins a paper copy of Sutton & Barto's *Reinforcement Learning*!
+The fastest runs go up on the [site](https://maharishiva.github.io/tinywmcraft/) with your handle.
 
 **What counts:** a diamond in the inventory that [iteration 3](https://maharishiva.github.io/tinywmcraft/?model=iteration3#play) draws, the model the site plays; that link keeps playing it when a newer model takes over the site. The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. The fewest steps win.
 
-**How to submit:** press **save clip**, then post the clip in the [Diamond Speedrun discussion](https://github.com/Maharishiva/tinywmcraft/discussions/9), and on X with a link to this repo if you like (**share** writes the caption for you). The clip shows the seed and the action under every frame, so the maintainer can watch it and replay the run. Edited videos, other model files and the real game do not count. The full rules: [SPEEDRUN.md](SPEEDRUN.md).
+**How to submit:** press **save clip**, then post the clip in the [Diamond Speedrun discussion](https://github.com/Maharishiva/tinywmcraft/discussions/9), and on X with a link to this repo if you like, tagging [@rldoeswork](https://x.com/rldoeswork) (**share** writes the caption for you). The clip shows the seed and the action under every frame, so the maintainer can watch it and replay the run. Edited videos, other model files and the real game do not count. The full rules: [SPEEDRUN.md](SPEEDRUN.md).
 
-**Also find the best glitch.** The model hallucinates in funny ways: post your weirdest clip in the [glitch discussion](https://github.com/Maharishiva/tinywmcraft/discussions/10). No prize, just kudos for being a world breaker. Every diamond clip and the best glitches go up on the [site](https://maharishiva.github.io/tinywmcraft/) with your handle!
+**Also find the best glitch.** The model hallucinates in funny ways: post your weirdest clip in the [glitch discussion](https://github.com/Maharishiva/tinywmcraft/discussions/10). Just kudos for being a world breaker. Every diamond clip and the best glitches go up on the [site](https://maharishiva.github.io/tinywmcraft/) with your handle!
 
 ![Eight worlds the model imagines from noise, each played inside the model by a PPO agent trained for diamonds; the two at the bottom right at night](docs/assets/dream.gif)
 
