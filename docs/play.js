@@ -611,9 +611,11 @@ async function load(url, what, keep) {  // fetch with a progress bar; keep: from
   return bytes;
 }
 
-function nogpu() {  // no WebGPU here: the model playing in play.gif (the real game left, the model right), and where it runs
-  msg.innerHTML = `<img class="demo" src="${new URL('assets/play.gif', import.meta.url)}" alt="A held-out episode: real ` +
-    'Craftax on the left, the world model on the right"><b>needs WebGPU</b><span>Chrome, Edge, or Safari 26+</span>';
+function nogpu() {  // no WebGPU here: the model playing in play.gif (the real game left, the model right) under the reason, and
+  // where it runs
+  msg.innerHTML = `<div class="demo"><img src="${new URL('assets/play.gif', import.meta.url)}" alt="A held-out episode: real ` +
+    'Craftax on the left, the world model on the right"><b>you need WebGPU enabled to play</b></div>' +
+    '<span>Chrome, Edge, or Safari 26+</span>';
 }
 
 async function main() {
