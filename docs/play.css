@@ -39,7 +39,6 @@
 @media (hover: none) { #play img.k { display: none; } }
 
 #play [hidden] { display: none !important; }
-#play .st.big { font-size: 14px; }
 
 /* the tutorial (tutorial.js): an outline that pulses on the target, and a big bubble with a pointer next to it (look a) or
    one caption over the top of the frame (look b); a small way out on the empty corner of the inventory strip */

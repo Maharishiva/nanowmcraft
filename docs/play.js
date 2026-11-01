@@ -79,7 +79,6 @@ const GRID = {
   right: { W: [1, 5, 1], A: [2, 4, 1], S: [2, 5, 1], D: [2, 6, 1], ACTION: [2, 1, 3] },
 };
 const MOVE = [[3, 'W'], [1, 'A'], [4, 'S'], [2, 'D'], [5, 'ACTION']];
-const READY = 'WASD to move, SPACE to act';   // after the tutorial, on keyboards only
 const ICONS = [8, 7, 9, 10, 6, 0, 11, 12, 13, 14, 15, 16];
 const FONT = {  // 3x5 pixel font of docs/make_play_gif.py
   A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111',
@@ -165,11 +164,10 @@ function hint() {  // the dimmed controls while the model loads
   root.classList.toggle('off', !session);
 }
 
-function learnt(early) {  // the tutorial is over: not again on this browser, the short hint instead
+function learnt(early) {  // the tutorial is over: not again on this browser
   localStorage.setItem('tinywmcraft.tutorial', early ? 'skipped' : 'done');
   coach = null;
   learn = false;
-  if (!end) greet();
 }
 
 function teach() {  // the tutorial over this world, from its first frame
@@ -314,10 +312,9 @@ function reset(s = randomSeed()) {  // a new world, seed s (random unless given)
   if (session) begin().catch(fail);
 }
 
-async function begin() {  // a new world plays: its first frame imagined, then the tutorial or the hint
+async function begin() {  // a new world plays: its first frame imagined, then the tutorial on a first visit
   if (!(await dream())) return;
   if (learn && episode === 1) teach();
-  else if (!coach) greet();
 }
 
 // The first frame, imagined from noise at slot 0 after a noop, not a step. About 2% of imagined first frames look
@@ -347,14 +344,6 @@ async function dream() {
   } finally {
     if (ep === episode) busy = false;   // a new world's first frame may be on its way already
   }
-}
-
-let tips = 0;   // moves the short hint stays before the status line shows what each move did
-function greet() {  // the short hint, big; none on touch screens
-  if (TOUCH) return;
-  status(READY, true);
-  st.classList.add('big');
-  tips = 12;
 }
 
 function spot(inv) {  // the diamond moment: a diamond in the inventory on two frames in a row, once a run
@@ -452,8 +441,7 @@ async function step(a) {  // results of a step started before a reset are droppe
     score += r > 0.5;
     if (score > best) localStorage.setItem('tinywmcraft.best', best = score);
     draw(o.rgb, a, r);
-    if (tips > 0) --tips || status('');   // the short hint goes after a few moves
-    else info(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
+    info(`${NAMES[a]}, ${Math.round(performance.now() - t0)} ms on your GPU`, r > 0.5);
     const inv = inventory(o.rgb);
     coach?.frame({ rgb: o.rgb, a, r, inv, over: !!end });
     spot(inv);
