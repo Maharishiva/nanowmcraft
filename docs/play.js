@@ -8,7 +8,7 @@ import { tutorial } from './tutorial.js';
 import { asleep } from './sleep.js';
 import { noise, PAST, NOISE_BUF, RNOISE } from './seeded.js';
 
-const X_HANDLE = '';   // the X handle the diamond caption ends with, when set
+const X_HANDLE = 'rldoeswork';   // the X handle both share captions end with ("via @..."), when set
 const GITHUB = 'github.com/Maharishiva/tinywmcraft';
 const MEDIABUNNY = 'https://cdn.jsdelivr.net/npm/mediabunny@1.61.5/dist/bundles/mediabunny.min.mjs';
 const LINK = ['MAHARISHIVA.GITHUB.IO/', 'TINYWMCRAFT'];   // on top of every saved clip
@@ -526,7 +526,7 @@ async function save() {  // a download; on iPhones and iPads the share sheet ins
 
 async function share() {  // phones: the clip to the share sheet, its caption to the clipboard; computers: a post on X with the
   // caption, the clip downloaded to attach
-  const handle = X_HANDLE && ' @' + X_HANDLE.replace(/^@/, '');
+  const handle = X_HANDLE && ' via @' + X_HANDLE.replace(/^@/, '');
   const text = diamond
     ? `I got a diamond inside a world model trained in under 10 minutes for $0.1 of compute. Every frame is generated ` +
       `by a neural network on my GPU. ${SITE} ${GITHUB}${handle}`
@@ -611,14 +611,21 @@ async function load(url, what, keep) {  // fetch with a progress bar; keep: from
   return bytes;
 }
 
+function nogpu() {  // no WebGPU here: the model playing in play.gif (the real game left, the model right) under the reason, and
+  // where it runs
+  msg.innerHTML = `<div class="demo"><img src="${new URL('assets/play.gif', import.meta.url)}" alt="A held-out episode: real ` +
+    'Craftax on the left, the world model on the right"><b>you need WebGPU enabled to play</b></div>' +
+    '<span>Chrome, Edge, or Safari 26+</span>';
+}
+
 async function main() {
   reset(SEED ?? (learn ? NAMED_TUT ?? TUT_SEED : undefined));   // the first world: the one asked for, the tutorial's, or a random one
+  const adapter = await navigator.gpu.requestAdapter();   // before the download: WebGPU there but off (no adapter) is no WebGPU
+  if (!adapter) return nogpu();
   stage = 'loading the model';
   const model = await load(MODEL, 'world model', !LOCAL && /^https:\/\//.test(MODEL));   // pinned URLs are cached
   loading('compiling it for your GPU', -1, 'no server, no queue: every frame is made on your machine');
   stage = 'compiling';
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error('no WebGPU adapter');
   const device = await adapter.requestDevice();
   device.lost.then(i => i.reason === 'destroyed' || fail(new Error(`the GPU was lost: ${i.message || i.reason}`)));
   const s = await create(device, model);   // every buffer, pipeline and bind group, once
@@ -654,7 +661,7 @@ addEventListener('resize', fit);
 fit();
 hint();
 if (navigator.gpu) main().catch(fail);
-else msg.innerHTML = '<b>needs WebGPU</b><span>Chrome, Edge, or Safari 26+</span>';
+else nogpu();
 if (LOCAL) window.tinywm = { press, inventory, fresh, clip, get frame() { return frames.at(-1); }, get frames() { return frames; },
   get seed() { return seedCode(seed); }, get coach() { return coach; }, get busy() { return busy; },
   get skipped() { return skipped; } };   // for testing on this machine

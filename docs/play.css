@@ -12,6 +12,10 @@
 #play .msg:has(.end) { justify-content: flex-start; background: none; }
 #play .end { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: calc(34 * var(--px, 5px)); }
 #play .msg span { color: #8a8a8a; font-size: 11px; }
+#play .msg .demo { position: relative; width: 100%; max-width: 560px; }   /* no WebGPU: play.gif instead of the game, */
+#play .msg .demo img { display: block; width: 100%; height: auto; }   /* the reason on a band across it */
+#play .msg .demo b { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); padding: 8px;
+  background: #0a0a0acc; }
 #play .msg button { height: 48px; padding: 0 10px; font: inherit; color: inherit; background: #1c1c1e;
   border: 2px solid #3a3a3e; border-radius: 0; cursor: pointer; }
 #play .msg .hot { background: #ff6a13; border-color: #ff6a13; color: #0a0a0a; }
@@ -80,6 +84,7 @@
 @media (max-width: 700px) {
   #play { flex-direction: column; align-items: center; gap: var(--px, 4px); }
   #play .coach .bub { font-size: 20px; }
+  #play .msg .demo b { padding: 8px 4px; font-size: 14px; }   /* one line on a phone */
 }
 #play .key.cue, #play .key.glow { animation: cue 1s ease-in-out infinite; }
 @keyframes cue { 50% { border-color: #ff6a13; } }

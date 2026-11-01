@@ -22,7 +22,7 @@
 <meta name="twitter:description" content="A 14M-parameter world model of Craftax, a 2D Minecraft, learned from pixels and actions. Play it in your browser. Beat it in one 10-minute A100 run.">
 <meta name="twitter:image" content="https://maharishiva.github.io/tinywmcraft/assets/card.png">
 <meta name="twitter:image:alt" content="Real Craftax on the left, the world model on the right, the action below">
-<link rel="stylesheet" href="play.css">
+<link rel="stylesheet" href="play.css?v=3">
 <style>
 :root { --bg:#0a0a0a; --fg:#f0f0ee; --ink:#c8c8c4; --dim:#6a6a6a; --mid:#8a8a8a; --o:#ff6a13; --line:#1c1c1c; }
 * { box-sizing:border-box; }
@@ -107,7 +107,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 </header>
 
 <div id="play"></div>
-<script type="module" src="play.js?v=2"></script>
+<script type="module" src="play.js?v=3"></script>
 <p class="np" id="np">now playing: <a href="https://github.com/Maharishiva/tinywmcraft/blob/8538aa5/train.py">iteration 3</a> by <img class="crown" src="icons/crown.png" alt="crown" onerror="this.remove()"><a href="https://github.com/Maharishiva">Maharishiva</a></p>
 
 <nav class="links">
@@ -124,7 +124,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <p>Point your coding agent at tinywmcraft: it trains a world model in 10 minutes, scores it, and tries again. Push the score up, then play the model you made: walk around inside it, craft, fight, and see what it gets wrong.</p>
 <p class="cta">Beat <span id="best">0.562</span> and yours is iteration <span id="next">4</span>: the crown goes next to your GitHub login, and the player on this page switches to your model. Paste this into your coding agent:</p>
 <div class="cc">
-<div class="cc-box"><span class="cc-gt">&gt;</span><span><span id="prompt"><span class="cc-cmd">/goal</span> Clone https://github.com/Maharishiva/tinywmcraft, read program.md, get a GPU (a Google Colab A100 works: uv tool install google-colab-cli), beat the best world model under the rules on all three seeds, and only then open a pull request.</span><span class="cc-cur" aria-hidden="true"></span></span></div>
+<div class="cc-box"><span class="cc-gt">&gt;</span><span><span id="prompt"><span class="cc-cmd">/goal</span> Clone https://github.com/Maharishiva/tinywmcraft, read program.md, get a GPU (a Google Colab A100 works: uv tool install google-colab-cli), beat the best world model under the rules on the three-seed mean, and only then open a pull request.</span><span class="cc-cur" aria-hidden="true"></span></span></div>
 <div class="cc-foot"><span>paste into Codex, Claude Code or any coding agent</span><button type="button" id="copy">copy</button></div>
 </div>
 <p>The best so far, by the score: how close imagined play comes to the real game in looks, game logic and memory, and how well the model predicts rewards and deaths, from 0 for a trivial model to 1 for the real game.</p>
@@ -141,8 +141,8 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <!--{challenge-->
 <h2 id="speedrun"><a id="challenge"></a>diamond speedrun</h2>
 <p><b>Get a diamond <img class="ico" src="icons/diamond.png" alt=""> inside the world model.</b> In the player above, not in the real game. No code and no GPU needed. The fastest run posted before 24 December 2026 (PST) wins a paper copy of Sutton &amp; Barto's <i>Reinforcement Learning</i>.</p>
-<p><b>What counts:</b> a diamond in the inventory that <a href="?model=iteration3#play">iteration 3</a> draws, the model this page plays; that link keeps playing it when a newer model takes over the page. The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. The fewest steps win. The score does not count: the model hands out +1s that can be farmed.</p>
-<p><b>How to submit:</b> press save clip, then post the clip in the <a href="https://github.com/Maharishiva/tinywmcraft/discussions/9">Diamond Speedrun discussion</a> on GitHub, and on X too if you like (share writes the caption for you). The clip shows the seed and the action under every frame, so the maintainer can watch it and replay the run. Edited videos, other model files and the real game do not count. The full rules: <a href="https://github.com/Maharishiva/tinywmcraft/blob/main/SPEEDRUN.md">SPEEDRUN.md</a>.</p>
+<p><b>What counts:</b> a diamond in the inventory that <a href="?model=iteration3#play">iteration 3</a> draws on this site, the model this page plays; that link keeps playing it when a newer model takes over the page. The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. The fewest steps win. The score does not count: the model hands out +1s that can be farmed.</p>
+<p><b>How to submit:</b> press save clip, then post the clip in the <a href="https://github.com/Maharishiva/tinywmcraft/discussions/9">Diamond Speedrun discussion</a> on GitHub, and on X with the clip as a video, a link to the repo and a tag for <a href="https://x.com/rldoeswork">@rldoeswork</a> (share writes the caption and hands you the clip). A run needs both posts. The clip shows the seed and the action under every frame, so the maintainer can watch it and replay the run. Edited videos, other model files and the real game do not count. The full rules: <a href="https://github.com/Maharishiva/tinywmcraft/blob/main/diamond_speedrun.md">diamond_speedrun.md</a>.</p>
 <p><b>Or find the best glitch.</b> The model hallucinates in funny ways: post your weirdest clip in the <a href="https://github.com/Maharishiva/tinywmcraft/discussions/10">glitch discussion</a>. No prize, just kudos for breaking the world. Every diamond clip and the best glitches go up on this site with your handle.</p>
 <h3 id="achievements">the road to a diamond</h3>
 <div class="scroll"><svg class="tree" viewBox="0 0 768 322" role="img" aria-label="The 22 achievements of Craftax-Classic and what each one needs">
@@ -194,6 +194,7 @@ footer { color:var(--dim); font-size:12px; margin-top:52px; padding-top:14px; bo
 <!--{how-->
 <h2 id="how">how it works</h2>
 <p>tinywmcraft is a world model of <a href="https://github.com/MichaelTMatthews/Craftax">Craftax-Classic</a>, a 2D Minecraft, learned from scratch from pixels and actions alone. Given a history of frames and an action, it generates the next frame, the reward and whether the episode ends; feed its own frames back in and you can play inside it. Every world in the player starts from a first frame the model imagines from noise: nothing is replayed. <b>13.9M parameters</b> (5.2M tokenizer, 8.6M world model), trained cold in <b>under 10 minutes on one A100, about $0.1</b> of compute.</p>
+<p class="note">Colab Pro: $9.99 for 100 compute units, and a 40 GB A100 uses about 5.4 an hour (~$0.55/h). A full submission, three seeds with their evals, is under $0.5.</p>
 <figure class="wide"><picture><source media="(max-width:560px)" srcset="assets/architecture_v1.gif" width="540" height="877"><img class="px" src="assets/architecture.gif" alt="Frames go through the encoder to 4×4×32 latents, the world model denoises the newest latent in eight steps conditioned on the action, and the decoder shows the frame at every step" width="1200" height="400"></picture><figcaption>What runs on every action. No game engine and no game state: the encoder turns past frames into 4×4×32 latents, the world model denoises the next latent in eight steps conditioned on your action, and the decoder draws it.</figcaption></figure>
 <a class="more" href="model.html">inside the model: tokenizer, losses, optimizer, kernels, sampling</a>
 <!--how}-->
