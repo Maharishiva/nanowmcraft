@@ -1,11 +1,11 @@
 # Diamond Speedrun
 
 Get a diamond inside the world model: in the [browser player](https://maharishiva.github.io/tinywmcraft/#play), not in the real game. No code and no GPU needed: the player runs the model on your own GPU, and every world is imagined from noise.
-The fastest run posted before **24 December 2026, 23:59 PST** wins a paper copy of Sutton & Barto's *Reinforcement Learning*.
+The fastest runs go up on the [site](https://maharishiva.github.io/tinywmcraft/) with your handle.
 
 ## What counts
 
-- A diamond in the inventory the model draws, in [iteration 3 in the player](https://maharishiva.github.io/tinywmcraft/?model=iteration3#play) (the file [`web/play.wgr` at 00e272c](https://huggingface.co/maharishiva/tinywmcraft-v3/blob/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr) on Hugging Face). The site plays it by default today; when a newer model takes over the site before the deadline, that link keeps playing iteration 3 and runs on it still count.
+- A diamond in the inventory the model draws, in [iteration 3 in the player](https://maharishiva.github.io/tinywmcraft/?model=iteration3#play) (the file [`web/play.wgr` at 00e272c](https://huggingface.co/maharishiva/tinywmcraft-v3/blob/00e272ceae171d3f8409b3f736c16d6133d8b0c9/web/play.wgr) on Hugging Face). The site plays it by default today; when a newer model takes over the site, that link keeps playing iteration 3 and runs on it still count.
 - The player reads the inventory itself: when a diamond shows there on two frames in a row, it says DIAMOND! and marks the clip with the step it came on. That step is your time: the fewest steps win, and a tie goes to the earlier post.
 - How the model got there is the model's business. In the real game a diamond needs an iron pickaxe, which needs a furnace, coal and the rest ([the road to a diamond](https://maharishiva.github.io/tinywmcraft/#achievements)); the world model only tries to follow those rules. A diamond it hands out on its own counts too.
 - The score counter does not count. The model hands out +1s that can be farmed, which says more about the model than about you.
@@ -31,4 +31,4 @@ The clip is made by the player and carries what the maintainer needs: the site's
 
 ## Best glitch
 
-The model hallucinates in funny ways. Post your weirdest clip in the [glitch discussion](https://github.com/Maharishiva/tinywmcraft/discussions/10), the same way. There is no prize, just kudos for breaking the world. Every diamond clip and the best glitches go up on the site with your handle.
+The model hallucinates in funny ways. Post your weirdest clip in the [glitch discussion](https://github.com/Maharishiva/tinywmcraft/discussions/10), the same way. Just kudos for breaking the world. Every diamond clip and the best glitches go up on the site with your handle.
