@@ -9,7 +9,7 @@ Every iteration is on the [benchmark](https://maharishiva.github.io/tinywmcraft/
 ## Rules
 
 - **Data.** Train only on [`train.npz`](https://huggingface.co/datasets/maharishiva/tinywmcraft-v3) (in `data/`), at most 500k transitions. No other data, no pretrained weights.
-- **Learned, not written.** Everything the model knows about the game is fitted from `train.npz` in the training run: no game engine or game code, no hand-written rules or state parsers, no textures, labels or tables from the game or from `eval.py`. Learned tokenizers, codebooks and statistics are fine. Replaying stored training clips at eval time is not, and neither is a generator with nothing fitted (copying, looping or tiling the context frames).
+- **Learned, not written.** Everything the model knows about the game is fitted from `train.npz` in the training run: no game engine or game code, no hand-written rules or state parsers, no textures, labels or tables from the game or from `eval.py`. Learned tokenizers, codebooks and statistics are fine. Replaying stored training clips at eval time is not, and neither is a generator with nothing fitted (copying, looping or tiling the context frames). Caching, aligning or pasting back pixels or latents with code you wrote is a written rule; a learned memory is fine.
 - **The evaluator is not a loss.** `eval.py`'s feature network, probes and their outputs stay out of training and inference.
 - **Training.** At most 600 s per run on one A100 40GB, in a fresh process: imports, data loading, tokenizer, compilation, everything up to the written checkpoint. No persistent compilation cache. `train.py` stores its own wall clock as `train_s` in the checkpoint; the maintainer also times the whole process.
 - **Evaluation.** `eval.py` stays byte-identical to `main`. Its `eval_s`, timed from importing your module to the last metric (model loading and compilation count, reading `eval.npz` does not), is at most 300 s on the same GPU, in a fresh process without a persistent compilation cache; iteration 3 takes about 147 s. Anything else about generation is yours: the model family, the sampler, the number of steps, how much of the past the model keeps.
@@ -55,6 +55,7 @@ For every clip, eval calls `start` with 8 real frames, then `step` once per acti
 6. When an idea survives one seed, run seeds 1 and 2 and check the gates above.
 
 Exploratory runs can use any GPU and any seed; timings from other GPUs are only indicative. Iterations are decided on a Colab A100-SXM4-40GB.
+On Colab, an idle kernel gets the VM stopped and its disk wiped: keep a job running, and download each `model.npz` as soon as it is written.
 
 ## Submitting
 
